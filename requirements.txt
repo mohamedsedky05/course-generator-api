@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+python-multipart
+slowapi
+pdfplumber
+python-docx
+python-pptx
+yt-dlp
+openai-whisper
+youtube-transcript-api
+google-genai
+pydantic
+pydantic-settings
+python-dotenv
+aiofiles
