@@ -90,6 +90,19 @@ def _download_audio_sync(video_url: str, output_path: str) -> str:
         }],
         "quiet": True,
         "no_warnings": True,
+        # Bot-detection bypass for YouTube and other sites
+        "extractor_args": {
+            "youtube": {"player_client": ["web_creator", "tv_embedded"]},
+        },
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+        },
+        "sleep_interval": 2,
+        "max_sleep_interval": 5,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([video_url])

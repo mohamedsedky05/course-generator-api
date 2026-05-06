@@ -8,38 +8,16 @@ from services.llm_service import (
     _parse_json_safe,
     _strip_markdown_json,
     clean_transcription,
-    analyze_content,
-    generate_course_from_chunk,
-    generate_course,
+    generate_content,
 )
 
 # ---------------------------------------------------------------------------
 # Sample data
 # ---------------------------------------------------------------------------
 
-SAMPLE_ANALYSIS = {
-    "subject": "Machine Learning",
-    "difficulty": "Beginner",
-    "language": "English",
-    "key_topics": ["supervised learning", "neural networks", "gradient descent"],
-    "recommended_lectures": 2,
-}
-
-SAMPLE_COURSE = {
+SAMPLE_RESULT = {
     "title": "Introduction to Machine Learning",
-    "description": "A beginner-level course on ML fundamentals.",
-    "summary": "Machine learning enables computers to learn from data without explicit programming.",
-    "subject": "Machine Learning",
-    "difficulty": "Beginner",
-    "key_topics": ["supervised learning", "neural networks"],
-    "lectures": [
-        {
-            "lecture_number": 1,
-            "title": "What is Machine Learning?",
-            "content": "ML is a subset of AI that learns from data.",
-            "objectives": ["Define ML", "Identify the three types", "List key applications"],
-        }
-    ],
+    "description": "A beginner-level overview of ML fundamentals.",
     "quiz": [
         {
             "question_number": 1,
@@ -130,60 +108,74 @@ class TestCleanTranscriptionMocked:
 
 
 # ---------------------------------------------------------------------------
-# analyze_content  (mocked)
+# generate_content  (mocked)
 # ---------------------------------------------------------------------------
 
-class TestAnalyzeContentMocked:
-    async def test_returns_parsed_analysis(self):
-        with patch("services.llm_service._call_gemini", new=AsyncMock(return_value=json.dumps(SAMPLE_ANALYSIS))):
-            result = await analyze_content("some educational text")
-        assert result["subject"] == "Machine Learning"
-        assert result["difficulty"] == "Beginner"
-        assert isinstance(result["key_topics"], list)
+class TestGenerateContentMocked:
+    async def test_returns_dict_with_required_keys(self, english_text):
+        call_num = 0
 
-    async def test_retries_once_on_invalid_json(self):
-        call_count = 0
+        async def mock_gemini(prompt):
+            nonlocal call_num
+            call_num += 1
+            if call_num == 1:
+                return english_text          # clean_transcription pass-through
+            return json.dumps(SAMPLE_RESULT) # generation call
 
-        async def flaky_gemini(prompt):
-            nonlocal call_count
-            call_count += 1
-            return "not json" if call_count == 1 else json.dumps(SAMPLE_ANALYSIS)
+        with patch("services.llm_service._call_gemini", new=mock_gemini):
+            result = await generate_content(english_text, 2)
 
-        with patch("services.llm_service._call_gemini", new=flaky_gemini):
-            result = await analyze_content("text")
-        assert call_count == 2
-        assert result["subject"] == "Machine Learning"
-
-    async def test_raises_if_both_attempts_invalid(self):
-        with patch("services.llm_service._call_gemini", new=AsyncMock(return_value="not json")):
-            with pytest.raises(Exception):
-                await analyze_content("text")
-
-
-# ---------------------------------------------------------------------------
-# generate_course_from_chunk  (mocked)
-# ---------------------------------------------------------------------------
-
-class TestGenerateCourseFromChunkMocked:
-    async def test_returns_course_dict(self):
-        with patch("services.llm_service._call_gemini", new=AsyncMock(return_value=json.dumps(SAMPLE_COURSE))):
-            result = await generate_course_from_chunk("text", SAMPLE_ANALYSIS, 1, 2)
-        assert result["title"] == "Introduction to Machine Learning"
-        assert "lectures" in result
+        assert isinstance(result, dict)
+        assert "title" in result
+        assert "description" in result
         assert "quiz" in result
 
-    async def test_retries_on_invalid_json(self):
-        call_count = 0
+    async def test_quiz_is_list(self, english_text):
+        call_num = 0
+
+        async def mock_gemini(prompt):
+            nonlocal call_num
+            call_num += 1
+            return english_text if call_num == 1 else json.dumps(SAMPLE_RESULT)
+
+        with patch("services.llm_service._call_gemini", new=mock_gemini):
+            result = await generate_content(english_text, 2)
+
+        assert isinstance(result["quiz"], list)
+        assert len(result["quiz"]) > 0
+
+    async def test_retries_on_invalid_json(self, english_text):
+        """If the generation call returns bad JSON once, it should retry."""
+        call_num = 0
 
         async def flaky(prompt):
-            nonlocal call_count
-            call_count += 1
-            return "not json" if call_count == 1 else json.dumps(SAMPLE_COURSE)
+            nonlocal call_num
+            call_num += 1
+            if call_num == 1:
+                return english_text   # clean_transcription
+            if call_num == 2:
+                return "not json"     # first generation attempt fails
+            return json.dumps(SAMPLE_RESULT)  # retry succeeds
 
         with patch("services.llm_service._call_gemini", new=flaky):
-            result = await generate_course_from_chunk("text", SAMPLE_ANALYSIS, 1, 2)
-        assert call_count == 2
+            result = await generate_content(english_text, 2)
+
+        assert call_num == 3
         assert "title" in result
+
+    async def test_num_quiz_questions_appears_in_prompt(self, english_text):
+        """The num_quiz_questions value must be embedded in the prompt."""
+        prompts_seen = []
+
+        async def capture(prompt):
+            prompts_seen.append(prompt)
+            return english_text if len(prompts_seen) == 1 else json.dumps(SAMPLE_RESULT)
+
+        with patch("services.llm_service._call_gemini", new=capture):
+            await generate_content(english_text, 7)
+
+        generation_prompt = prompts_seen[1]
+        assert "7" in generation_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +231,7 @@ class TestCallGeminiRetry:
             with pytest.raises(Exception):
                 await _call_gemini("test")
 
-        assert call_count == 1   # no retry for quota errors
+        assert call_count == 1  # no retry for quota errors
 
     async def test_retries_on_timeout(self):
         call_count = 0
@@ -262,50 +254,6 @@ class TestCallGeminiRetry:
 
 
 # ---------------------------------------------------------------------------
-# generate_course (full pipeline, mocked)
-# ---------------------------------------------------------------------------
-
-class TestGenerateCoursePipelineMocked:
-    async def test_single_chunk_returns_dict(self, english_text):
-        call_num = 0
-
-        async def mock_gemini(prompt):
-            nonlocal call_num
-            call_num += 1
-            if call_num == 1:
-                return english_text             # clean_transcription
-            if call_num == 2:
-                return json.dumps(SAMPLE_ANALYSIS)  # analyze_content
-            return json.dumps(SAMPLE_COURSE)        # generate
-
-        with patch("services.llm_service._call_gemini", new=mock_gemini):
-            result = await generate_course(english_text, [english_text], 1, 2)
-
-        assert isinstance(result, dict)
-        assert "title" in result
-        assert "lectures" in result
-        assert "quiz" in result
-
-    async def test_clean_and_analyze_both_called(self, english_text):
-        """Verify both clean_transcription and analyze_content are invoked."""
-        prompts_seen = []
-
-        async def capture(prompt):
-            prompts_seen.append(prompt[:60])
-            if "corrector" in prompt.lower():
-                return english_text
-            if "analyst" in prompt.lower():
-                return json.dumps(SAMPLE_ANALYSIS)
-            return json.dumps(SAMPLE_COURSE)
-
-        with patch("services.llm_service._call_gemini", new=capture):
-            await generate_course(english_text, [english_text], 1, 2)
-
-        # At least 3 calls: clean + analyze + generate
-        assert len(prompts_seen) >= 3
-
-
-# ---------------------------------------------------------------------------
 # Integration — real Gemini API
 # ---------------------------------------------------------------------------
 
@@ -316,22 +264,20 @@ class TestLLMIntegration:
         text = "الراوتر يستخدم بروتوكول TCP لنقل البيانات عبر الإنترنت"
         result = await clean_transcription(text)
         assert isinstance(result, str) and len(result) > 5
-        # Either "router" appears, or the Arabic text is preserved
         assert "router" in result.lower() or "الراوتر" in result or "TCP" in result
 
-    async def test_analyze_content_returns_valid_schema(self, english_text):
-        result = await analyze_content(english_text)
-        assert "subject" in result
-        assert result["difficulty"] in ("Beginner", "Intermediate", "Advanced")
-        assert isinstance(result["key_topics"], list)
-        assert len(result["key_topics"]) > 0
-
-    async def test_generate_course_returns_complete_structure(self, english_text):
-        result = await generate_course(english_text, [english_text], 2, 5)
-        if isinstance(result, list):
-            from services.chunker import merge_course_chunks
-            result = merge_course_chunks(result)
-        for key in ("title", "description", "summary", "lectures", "quiz"):
+    async def test_generate_content_returns_complete_structure(self, english_text):
+        result = await generate_content(english_text, 5)
+        for key in ("title", "description", "quiz"):
             assert key in result, f"Missing key: {key}"
-        assert len(result["lectures"]) >= 1
+        assert isinstance(result["quiz"], list)
         assert len(result["quiz"]) >= 1
+
+    async def test_generate_content_quiz_has_correct_types(self, english_text):
+        result = await generate_content(english_text, 5)
+        for q in result["quiz"]:
+            assert q["type"] in ("mcq", "true_false")
+            if q["type"] == "mcq":
+                assert len(q["options"]) == 4
+            elif q["type"] == "true_false":
+                assert isinstance(q["correct_answer"], bool)

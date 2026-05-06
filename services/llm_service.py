@@ -29,66 +29,23 @@ def _get_client() -> genai.Client:
 # Prompts
 # ---------------------------------------------------------------------------
 
-ANALYSIS_PROMPT = """You are an expert educational content analyst.
-Analyze the following text and determine ONLY based on what is written in it:
-1. The subject/domain (e.g. Physics, Programming, History)
-2. The difficulty level (Beginner / Intermediate / Advanced)
-3. The language of the content
-4. Key topics covered (list up to 10) — extracted directly from the text only
-5. Recommended number of lectures (between 2-6) based on content volume
-
-STRICT RULES:
-- Do NOT add any information not present in the text
-- Do NOT make assumptions beyond what is explicitly stated
-- Respond ONLY in valid JSON, no markdown, no extra text
-
-Expected JSON format:
-{{
-  "subject": "...",
-  "difficulty": "Beginner|Intermediate|Advanced",
-  "language": "...",
-  "key_topics": ["topic1", "topic2"],
-  "recommended_lectures": 3
-}}
-
-TEXT TO ANALYZE:
-{text}"""
-
 GENERATION_PROMPT = """You are an expert educational content organizer.
-Based on the structural analysis: {analysis}
 
-Convert the following text into a structured course.
+Convert the following text into a structured educational output.
 
 STRICT CONTENT RULES — THIS IS THE MOST IMPORTANT PART:
 - Use ONLY the information explicitly present in the provided text
-- Do NOT add any external knowledge, examples, or analogies from outside the text
-- Do NOT enrich, expand, or supplement with your own knowledge
+- Do NOT add any external knowledge, examples, or analogies
 - Every quiz question must be answerable ONLY from the provided text
-- If something is not stated in the text, do not include it anywhere in the output
-- Your job is to REORGANIZE and RESTRUCTURE the content, not to add to it
-- Do not truncate. Write full detailed content for every section.
-- Respond ONLY in valid JSON with no markdown formatting.
+- Respond ONLY in valid JSON with no markdown formatting
 
-Generate a course with exactly {n} lectures and exactly {q} quiz questions.
-Quiz composition: 70% MCQ (4 options, one correct), 30% True/False.
+Generate exactly {q} quiz questions (70% MCQ with 4 options, 30% True/False).
 Output language must match the input content language.
 
-Required JSON schema (respond with NOTHING else — no markdown, no explanation):
+Required JSON schema (respond with NOTHING else):
 {{
-  "title": "Course title derived from the text",
+  "title": "A concise title derived from the text",
   "description": "2-3 sentence description using only what is in the text",
-  "summary": "Full detailed paragraph summary strictly from the text",
-  "subject": "...",
-  "difficulty": "Beginner|Intermediate|Advanced",
-  "key_topics": ["topic1", "topic2"],
-  "lectures": [
-    {{
-      "lecture_number": 1,
-      "title": "Lecture title from the text",
-      "content": "Full lecture content reorganized from the text",
-      "objectives": ["objective1", "objective2", "objective3"]
-    }}
-  ],
   "quiz": [
     {{
       "question_number": 1,
@@ -196,7 +153,7 @@ def _strip_markdown_json(text: str) -> str:
 
 async def _call_gemini(prompt: str) -> str:
     last_exc: Exception | None = None
-    for attempt in range(1, len(_RETRY_DELAYS) + 2):  # up to 3 attempts
+    for attempt in range(1, len(_RETRY_DELAYS) + 2):  # up to 4 attempts
         try:
             client = _get_client()
             response = await asyncio.wait_for(
@@ -244,6 +201,7 @@ def _parse_json_safe(raw: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def clean_transcription(text: str) -> str:
+    """Fix Arabic transliterations of English technical terms."""
     t0 = time.time()
     prompt = TERM_FIX_PROMPT.format(text=text)
     try:
@@ -255,84 +213,29 @@ async def clean_transcription(text: str) -> str:
         return text
 
 
-async def analyze_content(text: str) -> dict:
-    t0 = time.time()
-    prompt = ANALYSIS_PROMPT.format(text=text[:20000])
+async def generate_content(text: str, num_quiz_questions: int) -> dict:
+    """
+    Single-stage pipeline: clean the text then generate title + description + quiz.
+    Returns a dict with keys: title, description, quiz.
+    """
+    t_total = time.time()
+
+    # Clean up transliterations (no-op for pure English; safe fallback on error)
+    cleaned_text = await clean_transcription(text)
+
+    # Generate title + description + quiz in one call
+    logger.info(f"[llm] Generating content ({num_quiz_questions} quiz questions)")
+    prompt = GENERATION_PROMPT.format(q=num_quiz_questions, text=cleaned_text)
     raw = await _call_gemini(prompt)
     try:
         result = _parse_json_safe(raw)
     except (json.JSONDecodeError, ValueError):
+        logger.warning("[llm] Invalid JSON on first attempt, retrying with explicit instruction")
         raw2 = await _call_gemini(prompt + RETRY_SUFFIX)
         result = _parse_json_safe(raw2)
-    logger.info(
-        f"[llm] analyze_content done in {time.time()-t0:.2f}s | "
-        f"subject={result.get('subject')} difficulty={result.get('difficulty')}"
-    )
-    return result
-
-
-async def generate_course_from_chunk(
-    text: str,
-    analysis: dict,
-    num_lectures: int,
-    num_quiz_questions: int,
-) -> dict:
-    prompt = GENERATION_PROMPT.format(
-        analysis=json.dumps(analysis, ensure_ascii=False),
-        n=num_lectures,
-        q=num_quiz_questions,
-        text=text,
-    )
-    raw = await _call_gemini(prompt)
-    try:
-        return _parse_json_safe(raw)
-    except (json.JSONDecodeError, ValueError):
-        raw2 = await _call_gemini(prompt + RETRY_SUFFIX)
-        return _parse_json_safe(raw2)
-
-
-async def generate_course(
-    text: str,
-    chunks: list,
-    num_lectures: int,
-    num_quiz_questions: int,
-) -> dict:
-    t_total = time.time()
-
-    # Stage 1: clean transcription + structural analysis in parallel.
-    # Analysis runs on the raw text (sufficient for metadata extraction);
-    # generation then uses the cleaned text for accuracy.
-    logger.info("[llm] Stage 1: clean_transcription + analyze_content (parallel)")
-    t0 = time.time()
-    cleaned_text, analysis = await asyncio.gather(
-        clean_transcription(text),
-        analyze_content(text[:20000]),
-    )
-    logger.info(f"[llm] Stage 1 complete in {time.time()-t0:.2f}s")
-
-    # Re-chunk from cleaned text so generation sees corrected content
-    from services.chunker import chunk_text
-    chunks = chunk_text(cleaned_text)
-
-    # Stage 2: content generation
-    logger.info(f"[llm] Stage 2: generating course ({len(chunks)} chunk(s))")
-    t1 = time.time()
-
-    if len(chunks) == 1:
-        result = await generate_course_from_chunk(
-            chunks[0], analysis, num_lectures, num_quiz_questions
-        )
-    else:
-        lectures_per_chunk = max(2, num_lectures // len(chunks))
-        questions_per_chunk = max(5, num_quiz_questions // len(chunks))
-        tasks = [
-            generate_course_from_chunk(chunk, analysis, lectures_per_chunk, questions_per_chunk)
-            for chunk in chunks
-        ]
-        result = await asyncio.gather(*tasks)
 
     logger.info(
-        f"[llm] Stage 2 complete in {time.time()-t1:.2f}s | "
-        f"total pipeline={time.time()-t_total:.2f}s"
+        f"[llm] generate_content done in {time.time()-t_total:.2f}s | "
+        f"quiz_items={len(result.get('quiz', []))}"
     )
     return result

@@ -5,7 +5,7 @@ slowapi
 pdfplumber
 python-docx
 python-pptx
-yt-dlp
+yt-dlp>=2024.12.13
 openai-whisper
 youtube-transcript-api
 google-genai

@@ -1,30 +1,17 @@
 """API endpoint tests using FastAPI TestClient."""
 import io
-import json
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from tests.conftest import ENGLISH_TEXT
 
 # ---------------------------------------------------------------------------
-# Shared mock data
+# Shared mock data  (new simplified schema: title + description + quiz only)
 # ---------------------------------------------------------------------------
 
 _MOCK_COURSE = {
     "title": "Introduction to Machine Learning",
     "description": "A beginner course covering ML fundamentals.",
-    "summary": "ML enables learning from data without explicit programming.",
-    "subject": "Machine Learning",
-    "difficulty": "Beginner",
-    "key_topics": ["supervised learning", "neural networks"],
-    "lectures": [
-        {
-            "lecture_number": 1,
-            "title": "What is ML?",
-            "content": "ML is a subset of AI.",
-            "objectives": ["Define ML", "Identify types", "List applications"],
-        }
-    ],
     "quiz": [
         {
             "question_number": 1,
@@ -49,15 +36,15 @@ _MOCK_TRANSCRIPTION = (ENGLISH_TEXT, "en")
 
 @pytest.fixture
 def mock_llm(monkeypatch):
-    """Patch generate_course at the router level to return a fake course."""
+    """Patch generate_content at the router level to return a fake result."""
     mock = AsyncMock(return_value=_MOCK_COURSE)
-    monkeypatch.setattr("routers.generate.generate_course", mock)
+    monkeypatch.setattr("routers.generate.generate_content", mock)
     return mock
 
 
 @pytest.fixture
 def mock_transcribe(monkeypatch):
-    """Patch transcribe_video to skip real YouTube/Whisper calls."""
+    """Patch transcribe_video to skip real network calls."""
     mock = AsyncMock(return_value=_MOCK_TRANSCRIPTION)
     monkeypatch.setattr("routers.generate.transcribe_video", mock)
     return mock
@@ -111,16 +98,18 @@ class TestInputValidation:
         assert r.status_code == 400
         assert r.json()["error_code"] == "MULTIPLE_INPUTS"
 
-    def test_invalid_youtube_url_returns_400(self, client):
+    def test_invalid_url_returns_400(self, client):
+        """A URL that doesn't start with http/https should be rejected."""
         r = client.post("/api/generate", data={
-            "video_url": "https://notayoutubeurl.com/watch?v=12345",
+            "video_url": "not-a-valid-url",
         })
         assert r.status_code == 400
-        assert r.json()["error_code"] == "INVALID_VIDEO_URL"
+        assert r.json()["error_code"] == "INVALID_URL"
 
     def test_invalid_url_has_ar_message(self, client):
-        r = client.post("/api/generate", data={"video_url": "https://google.com"})
-        assert "ar_message" in r.json()
+        r = client.post("/api/generate", data={"video_url": "ftp://example.com/video"})
+        body = r.json()
+        assert "ar_message" in body
 
     def test_text_too_short_returns_400(self, client):
         r = client.post("/api/generate", data={"text": "too short"})
@@ -148,15 +137,27 @@ class TestInputValidation:
         r = client.post("/api/generate", data={})
         assert r.json()["status"] == "error"
 
-    def test_valid_youtube_urls_accepted(self, client, mock_llm, mock_transcribe):
+    def test_valid_video_urls_accepted(self, client, mock_llm, mock_transcribe):
+        """Any http/https URL should pass validation — YouTube, Vimeo, etc."""
         valid_urls = [
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
             "https://youtube.com/watch?v=dQw4w9WgXcQ",
             "https://youtu.be/dQw4w9WgXcQ",
+            "https://vimeo.com/123456789",
+            "https://www.facebook.com/video/123456789",
         ]
         for url in valid_urls:
             r = client.post("/api/generate", data={"video_url": url})
-            assert r.status_code == 200, f"Expected 200 for {url}, got {r.status_code}: {r.text}"
+            assert r.status_code == 200, (
+                f"Expected 200 for {url}, got {r.status_code}: {r.text}"
+            )
+
+    def test_non_http_url_rejected(self, client):
+        """ftp:// and bare strings are not valid video URLs."""
+        for bad_url in ["ftp://example.com/video.mp4", "example.com/video", "just-text"]:
+            r = client.post("/api/generate", data={"video_url": bad_url})
+            assert r.status_code == 400, f"Expected 400 for '{bad_url}'"
+            assert r.json()["error_code"] == "INVALID_URL"
 
 
 # ---------------------------------------------------------------------------
@@ -180,13 +181,26 @@ class TestGeneratePlainText:
         body = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()
         assert "course" in body
 
+    def test_course_has_title(self, client, mock_llm):
+        course = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()["course"]
+        assert "title" in course
+
+    def test_course_has_description(self, client, mock_llm):
+        course = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()["course"]
+        assert "description" in course
+
+    def test_course_has_quiz(self, client, mock_llm):
+        course = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()["course"]
+        assert "quiz" in course
+        assert isinstance(course["quiz"], list)
+
     def test_metadata_key_present(self, client, mock_llm):
         body = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()
         assert "metadata" in body
 
     def test_metadata_has_required_fields(self, client, mock_llm):
         meta = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()["metadata"]
-        for field in ("processing_time_seconds", "word_count", "chunks_used"):
+        for field in ("processing_time_seconds", "word_count"):
             assert field in meta
 
     def test_word_count_in_metadata(self, client, mock_llm):
@@ -197,19 +211,17 @@ class TestGeneratePlainText:
         body = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()
         assert body["detected_language"] == "en"
 
-    def test_transcription_is_null_for_text(self, client, mock_llm):
+    def test_transcript_populated_for_text(self, client, mock_llm):
+        """transcript is always present and filled even for plain-text input."""
         body = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()
-        assert body["transcription"] is None
-
-    def test_num_lectures_param_passed_to_llm(self, client, mock_llm):
-        client.post("/api/generate", data={"text": ENGLISH_TEXT, "num_lectures": 4})
-        call_args = mock_llm.call_args[0]
-        assert call_args[2] == 4  # num_lectures positional arg
+        assert "transcript" in body
+        assert body["transcript"] is not None
+        assert len(body["transcript"]) > 0
 
     def test_num_quiz_questions_param_passed_to_llm(self, client, mock_llm):
         client.post("/api/generate", data={"text": ENGLISH_TEXT, "num_quiz_questions": 8})
         call_args = mock_llm.call_args[0]
-        assert call_args[3] == 8  # num_quiz_questions positional arg
+        assert call_args[1] == 8  # second positional arg to generate_content(text, num_quiz_questions)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +242,14 @@ class TestFileUpload:
             files={"file": ("doc.txt", io.BytesIO(txt_bytes), "text/plain")},
         ).json()
         assert body["input_type"] == "file_upload"
+
+    def test_txt_transcript_populated(self, client, mock_llm, txt_bytes):
+        body = client.post(
+            "/api/generate",
+            files={"file": ("doc.txt", io.BytesIO(txt_bytes), "text/plain")},
+        ).json()
+        assert body["transcript"] is not None
+        assert len(body["transcript"]) > 0
 
     def test_docx_upload_returns_200(self, client, mock_llm, docx_bytes):
         r = client.post(
@@ -254,7 +274,7 @@ class TestFileUpload:
 
 
 # ---------------------------------------------------------------------------
-# Video URL
+# Video URL  (YouTube + non-YouTube)
 # ---------------------------------------------------------------------------
 
 class TestVideoUrl:
@@ -264,18 +284,26 @@ class TestVideoUrl:
         })
         assert r.status_code == 200
 
-    def test_input_type_is_youtube_video(self, client, mock_llm, mock_transcribe):
-        body = client.post("/api/generate", data={
-            "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-        }).json()
-        assert body["input_type"] == "youtube_video"
+    def test_vimeo_url_returns_200(self, client, mock_llm, mock_transcribe):
+        """Non-YouTube URLs must no longer be rejected at validation."""
+        r = client.post("/api/generate", data={
+            "video_url": "https://vimeo.com/123456789",
+        })
+        assert r.status_code == 200
 
-    def test_transcription_field_populated(self, client, mock_llm, mock_transcribe):
+    def test_input_type_is_video(self, client, mock_llm, mock_transcribe):
         body = client.post("/api/generate", data={
             "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         }).json()
-        assert body["transcription"] is not None
-        assert len(body["transcription"]) > 0
+        assert body["input_type"] == "video"
+
+    def test_transcript_field_populated(self, client, mock_llm, mock_transcribe):
+        body = client.post("/api/generate", data={
+            "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        }).json()
+        assert "transcript" in body
+        assert body["transcript"] is not None
+        assert len(body["transcript"]) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -288,8 +316,7 @@ class TestCaching:
         r1 = client.post("/api/generate", data={"video_url": url})
         r2 = client.post("/api/generate", data={"video_url": url})
         assert r1.status_code == r2.status_code == 200
-        # LLM should only be called once; second hit comes from cache
-        assert mock_llm.call_count == 1
+        assert mock_llm.call_count == 1  # LLM called only once; second hit from cache
 
     def test_cache_returns_identical_response(self, client, mock_llm, mock_transcribe):
         url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -345,7 +372,7 @@ class TestErrorMessages:
         cases = [
             ({"": ""}, "NO_INPUT"),
             ({"text": "short"}, "TEXT_TOO_SHORT"),
-            ({"video_url": "https://google.com"}, "INVALID_VIDEO_URL"),
+            ({"video_url": "not-a-valid-url"}, "INVALID_URL"),
         ]
         for data, expected_code in cases:
             r = client.post("/api/generate", data=data)
@@ -372,14 +399,16 @@ class TestYouTubeEndToEnd:
     def test_real_video_returns_success(self, client):
         r = client.post("/api/generate", data={
             "video_url": "https://www.youtube.com/watch?v=aircAruvnKk",
-            "num_lectures": 2,
             "num_quiz_questions": 5,
         }, timeout=180)
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "success"
-        assert body["input_type"] == "youtube_video"
-        assert body["transcription"] is not None
+        assert body["input_type"] == "video"
+        assert body["transcript"] is not None
+        assert len(body["transcript"]) > 0
         assert "course" in body
-        assert len(body["course"]["lectures"]) >= 1
+        assert "title" in body["course"]
+        assert "description" in body["course"]
+        assert isinstance(body["course"]["quiz"], list)
         assert len(body["course"]["quiz"]) >= 1

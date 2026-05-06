@@ -15,8 +15,7 @@ from services.extractor import (
     SUPPORTED_EXTENSIONS,
 )
 from services.transcriber import transcribe_video
-from services.chunker import chunk_text, merge_course_chunks
-from services.llm_service import generate_course
+from services.llm_service import generate_content
 from utils.rate_limit import limiter
 
 router = APIRouter(prefix="/api", tags=["generate"])
@@ -25,14 +24,12 @@ logger = logging.getLogger("router")
 MIN_WORDS = 50
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 
-_YOUTUBE_RE = re.compile(
-    r'^https?://(www\.)?(youtube\.com/(watch\?.*v=|shorts/|embed/)|youtu\.be/)[A-Za-z0-9_\-]{11}',
-    re.IGNORECASE,
-)
+# Accept any properly-formed URL (http or https); yt-dlp handles 1000+ sites
+_URL_RE = re.compile(r'^https?://', re.IGNORECASE)
 
 
-def _is_valid_video_url(url: str) -> bool:
-    return bool(_YOUTUBE_RE.search(url.strip()))
+def _is_valid_url(url: str) -> bool:
+    return bool(_URL_RE.match(url.strip()))
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +39,7 @@ def _is_valid_video_url(url: str) -> bool:
 _AR_MESSAGES = {
     "NO_INPUT":             "يرجى تقديم مصدر واحد فقط: نص، ملف، أو رابط فيديو.",
     "MULTIPLE_INPUTS":      "يُسمح بمصدر واحد فقط في كل طلب: نص أو ملف أو رابط فيديو.",
-    "INVALID_VIDEO_URL":    "رابط الفيديو غير صالح. يُرجى إدخال رابط يوتيوب صحيح.",
+    "INVALID_URL":          "رابط الفيديو غير صالح. يُرجى إدخال رابط يبدأ بـ http أو https.",
     "FILE_TOO_LARGE":       "حجم الملف يتجاوز الحد المسموح به (50 ميجابايت).",
     "UNSUPPORTED_FILE_TYPE":"نوع الملف غير مدعوم. الأنواع المدعومة: PDF، DOCX، PPTX، TXT.",
     "FILE_EXTRACTION_ERROR":"تعذّر استخراج النص من الملف. تأكد من أن الملف غير تالف.",
@@ -76,7 +73,6 @@ async def generate_endpoint(
     request: Request,
     text: Optional[str] = Form(None),
     video_url: Optional[str] = Form(None),
-    num_lectures: int = Form(default=3, ge=2, le=8),
     num_quiz_questions: int = Form(default=10, ge=5, le=20),
     output_language: str = Form(default="auto"),
     file: Optional[UploadFile] = File(None),
@@ -90,11 +86,10 @@ async def generate_endpoint(
     if provided > 1:
         return _build_error("MULTIPLE_INPUTS", "Only one input source is allowed per request.")
 
-    if video_url is not None and not _is_valid_video_url(video_url):
+    if video_url is not None and not _is_valid_url(video_url):
         return _build_error(
-            "INVALID_VIDEO_URL",
-            f"'{video_url}' is not a recognised YouTube URL. "
-            "Expected format: https://www.youtube.com/watch?v=... or https://youtu.be/...",
+            "INVALID_URL",
+            f"'{video_url}' is not a valid URL. Expected format: https://...",
         )
 
     # ── Cache lookup (video_url only) ──────────────────────────────────────
@@ -109,11 +104,12 @@ async def generate_endpoint(
     # ── Text extraction ────────────────────────────────────────────────────
     raw_text = ""
     input_type = ""
-    transcription = None
+    transcript = ""
     detected_language = "en"
 
     if text is not None:
         raw_text = clean_text(text)
+        transcript = raw_text
         input_type = "plain_text"
         logger.info(f"[router] plain_text input | words={len(raw_text.split())}")
 
@@ -135,13 +131,14 @@ async def generate_endpoint(
             return _build_error("UNSUPPORTED_FILE_TYPE", str(e))
         except Exception as e:
             return _build_error("FILE_EXTRACTION_ERROR", f"Could not extract text from file: {e}")
+        transcript = raw_text
         input_type = "file_upload"
 
     elif video_url is not None:
         try:
             lang_hint = None if output_language == "auto" else output_language
             raw_text, detected_language = await transcribe_video(video_url, lang_hint)
-            transcription = raw_text
+            transcript = raw_text
         except RuntimeError as e:
             msg = str(e).lower()
             if "unavailable" in msg or "private" in msg:
@@ -149,7 +146,7 @@ async def generate_endpoint(
             return _build_error("TRANSCRIPTION_FAILED", f"Audio transcription failed: {e}", 500)
         except Exception as e:
             return _build_error("VIDEO_UNAVAILABLE", f"Could not access the provided video URL: {e}")
-        input_type = "youtube_video"
+        input_type = "video"
         logger.info(f"[router] video transcription complete | words={len(raw_text.split())}")
 
     # ── Word-count gate ────────────────────────────────────────────────────
@@ -161,27 +158,19 @@ async def generate_endpoint(
         )
 
     # ── Language detection ─────────────────────────────────────────────────
-    if input_type != "youtube_video" or detected_language == "unknown":
+    if input_type != "video" or detected_language == "unknown":
         detected_language = detect_language(raw_text)
         if output_language != "auto":
             detected_language = output_language
 
-    # ── Chunking ───────────────────────────────────────────────────────────
-    chunks = chunk_text(raw_text)
-    chunks_used = len(chunks)
-    logger.info(f"[router] chunked into {chunks_used} chunk(s)")
-
     # ── LLM generation ────────────────────────────────────────────────────
     try:
-        result = await generate_course(raw_text, chunks, num_lectures, num_quiz_questions)
+        result = await generate_content(raw_text, num_quiz_questions)
     except Exception as e:
         msg = str(e).lower()
         if "quota" in msg or "resourceexhausted" in msg:
             return _build_error("LLM_QUOTA_EXCEEDED", "Gemini API quota exceeded. Try again later.", 429)
         return _build_error("LLM_ERROR", f"Content generation failed: {e}", 500)
-
-    if isinstance(result, list):
-        result = merge_course_chunks(result)
 
     processing_time = round(time.time() - start_time, 2)
     logger.info(f"[router] request complete in {processing_time}s | input_type={input_type}")
@@ -190,12 +179,11 @@ async def generate_endpoint(
         "status": "success",
         "input_type": input_type,
         "detected_language": detected_language,
-        "transcription": transcription,
+        "transcript": transcript,
         "course": result,
         "metadata": {
             "processing_time_seconds": processing_time,
             "word_count": word_count,
-            "chunks_used": chunks_used,
         },
     }
 

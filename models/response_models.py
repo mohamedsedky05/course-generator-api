@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, Union, List, Literal
+from typing import List, Literal, Union
 
 
 class MCQQuestion(BaseModel):
@@ -19,36 +19,23 @@ class TrueFalseQuestion(BaseModel):
     explanation: str
 
 
-class Lecture(BaseModel):
-    lecture_number: int
-    title: str
-    content: str
-    objectives: List[str]
-
-
-class Course(BaseModel):
+class CourseResult(BaseModel):
     title: str
     description: str
-    summary: str
-    subject: str
-    difficulty: str
-    key_topics: List[str]
-    lectures: List[Lecture]
     quiz: List[Union[MCQQuestion, TrueFalseQuestion]]
 
 
 class Metadata(BaseModel):
     processing_time_seconds: float
     word_count: int
-    chunks_used: int
 
 
 class GenerateResponse(BaseModel):
     status: Literal["success"]
     input_type: str
     detected_language: str
-    transcription: Optional[str] = None
-    course: Course
+    transcript: str          # always populated — raw extracted text
+    course: CourseResult
     metadata: Metadata
 
 
@@ -56,3 +43,4 @@ class ErrorResponse(BaseModel):
     status: Literal["error"]
     error_code: str
     message: str
+    ar_message: str
