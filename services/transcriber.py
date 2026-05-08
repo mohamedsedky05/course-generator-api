@@ -127,7 +127,13 @@ def _try_youtube_captions(video_url: str) -> Optional[Tuple[str, str]]:
             return None
         return text.strip(), lang
     except Exception as e:
-        print(f"[captions] failed: {type(e).__name__}")
+        err_name = type(e).__name__
+        err_str = str(e).lower()
+        # Bot-detection or sign-in wall → fall through to yt-dlp instead of erroring
+        if any(kw in err_str for kw in ("bot", "sign in", "confirm", "captcha", "blocked")):
+            logger.warning(f"[captions] bot-detection triggered ({err_name}), skipping to yt-dlp")
+            return None
+        print(f"[captions] failed: {err_name}")
         return None
 
 
@@ -211,12 +217,16 @@ def _download_audio_sync(video_url: str, output_path: str) -> str:
         }],
         "quiet": True,
         "no_warnings": True,
-        # Bot-detection bypass for YouTube and other sites
+        # Bot-detection bypass — ios client mimics the official YouTube app
+        "cookiesfrombrowser": None,
         "extractor_args": {
-            "youtube": {"player_client": ["web_creator", "tv_embedded"]},
+            "youtube": {"player_client": ["ios", "web_creator", "tv_embedded"]},
         },
-        "http_headers": {
-            "User-Agent": _UA,
+        "add_headers": {
+            "User-Agent": (
+                "com.google.ios.youtube/19.29.1 "
+                "(iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X)"
+            ),
         },
         "sleep_interval": 2,
         "max_sleep_interval": 5,
