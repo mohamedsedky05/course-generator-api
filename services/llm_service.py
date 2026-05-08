@@ -46,6 +46,7 @@ Required JSON schema (respond with NOTHING else):
 {{
   "title": "A concise title derived from the text",
   "description": "2-3 sentence description using only what is in the text",
+  "quiz_title": "A short engaging title for the quiz section, derived from the content",
   "quiz": [
     {{
       "question_number": 1,

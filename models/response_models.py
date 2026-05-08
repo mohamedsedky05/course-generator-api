@@ -22,6 +22,7 @@ class TrueFalseQuestion(BaseModel):
 class CourseResult(BaseModel):
     title: str
     description: str
+    quiz_title: str
     quiz: List[Union[MCQQuestion, TrueFalseQuestion]]
 
 
