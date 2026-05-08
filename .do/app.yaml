@@ -1,0 +1,6 @@
+name: course-generator-api
+services:
+- name: course-generator-api
+  dockerfile_path: Dockerfile
+  http_port: 8080
+  instance_size_slug: basic-xs
