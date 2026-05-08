@@ -107,7 +107,7 @@ class TestInputValidation:
         assert r.json()["error_code"] == "INVALID_URL"
 
     def test_invalid_url_has_ar_message(self, client):
-        r = client.post("/api/generate", data={"video_url": "ftp://example.com/video"})
+        r = client.post("/api/generate", data={"video_url": "not-a-url"})
         body = r.json()
         assert "ar_message" in body
 
@@ -138,13 +138,14 @@ class TestInputValidation:
         assert r.json()["status"] == "error"
 
     def test_valid_video_urls_accepted(self, client, mock_llm, mock_transcribe):
-        """Any http/https URL should pass validation — YouTube, Vimeo, etc."""
+        """Any https:// URL should pass validation — YouTube, Vimeo, iframe CDN, etc."""
         valid_urls = [
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
             "https://youtube.com/watch?v=dQw4w9WgXcQ",
             "https://youtu.be/dQw4w9WgXcQ",
             "https://vimeo.com/123456789",
             "https://www.facebook.com/video/123456789",
+            "https://iframe.mediadelivery.net/embed/578375/3fbdf5a1?token=abc",  # Bunny.net
         ]
         for url in valid_urls:
             r = client.post("/api/generate", data={"video_url": url})
@@ -152,9 +153,15 @@ class TestInputValidation:
                 f"Expected 200 for {url}, got {r.status_code}: {r.text}"
             )
 
-    def test_non_http_url_rejected(self, client):
-        """ftp:// and bare strings are not valid video URLs."""
-        for bad_url in ["ftp://example.com/video.mp4", "example.com/video", "just-text"]:
+    def test_non_https_url_rejected(self, client):
+        """Only https:// is accepted; http://, ftp://, and bare strings are rejected."""
+        bad_urls = [
+            "ftp://example.com/video.mp4",
+            "http://insecure.com/video.mp4",   # plain HTTP not accepted
+            "example.com/video",
+            "just-text",
+        ]
+        for bad_url in bad_urls:
             r = client.post("/api/generate", data={"video_url": bad_url})
             assert r.status_code == 400, f"Expected 400 for '{bad_url}'"
             assert r.json()["error_code"] == "INVALID_URL"

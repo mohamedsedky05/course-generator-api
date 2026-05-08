@@ -24,8 +24,8 @@ logger = logging.getLogger("router")
 MIN_WORDS = 50
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 
-# Accept any properly-formed URL (http or https); yt-dlp handles 1000+ sites
-_URL_RE = re.compile(r'^https?://', re.IGNORECASE)
+# Only secure HTTPS URLs are accepted; yt-dlp handles 1000+ sites behind them
+_URL_RE = re.compile(r'^https://', re.IGNORECASE)
 
 
 def _is_valid_url(url: str) -> bool:
@@ -39,7 +39,7 @@ def _is_valid_url(url: str) -> bool:
 _AR_MESSAGES = {
     "NO_INPUT":             "يرجى تقديم مصدر واحد فقط: نص، ملف، أو رابط فيديو.",
     "MULTIPLE_INPUTS":      "يُسمح بمصدر واحد فقط في كل طلب: نص أو ملف أو رابط فيديو.",
-    "INVALID_URL":          "رابط الفيديو غير صالح. يُرجى إدخال رابط يبدأ بـ http أو https.",
+    "INVALID_URL":          "رابط الفيديو غير صالح. يُرجى إدخال رابط يبدأ بـ https://.",
     "FILE_TOO_LARGE":       "حجم الملف يتجاوز الحد المسموح به (50 ميجابايت).",
     "UNSUPPORTED_FILE_TYPE":"نوع الملف غير مدعوم. الأنواع المدعومة: PDF، DOCX، PPTX، TXT.",
     "FILE_EXTRACTION_ERROR":"تعذّر استخراج النص من الملف. تأكد من أن الملف غير تالف.",
@@ -89,7 +89,8 @@ async def generate_endpoint(
     if video_url is not None and not _is_valid_url(video_url):
         return _build_error(
             "INVALID_URL",
-            f"'{video_url}' is not a valid URL. Expected format: https://...",
+            f"'{video_url}' is not a valid URL. "
+            "Supported: YouTube, Vimeo, Bunny.net CDN, and any other https:// video URL.",
         )
 
     # ── Cache lookup (video_url only) ──────────────────────────────────────

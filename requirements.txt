@@ -6,6 +6,7 @@ pdfplumber
 python-docx
 python-pptx
 yt-dlp>=2024.12.13
+httpx>=0.27.0
 openai-whisper
 youtube-transcript-api
 google-genai
