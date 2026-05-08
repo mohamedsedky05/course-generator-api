@@ -217,6 +217,7 @@ def _download_audio_sync(video_url: str, output_path: str) -> str:
         }],
         "quiet": True,
         "no_warnings": True,
+        "ffmpeg_location": "/usr/bin/ffmpeg",
         # Bot-detection bypass — ios client mimics the official YouTube app
         "cookiesfrombrowser": None,
         "extractor_args": {
