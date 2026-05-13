@@ -207,6 +207,7 @@ def _extract_video_from_iframe(url: str) -> Optional[str]:
 
 def _download_audio_sync(video_url: str, output_path: str) -> str:
     import yt_dlp
+    ffmpeg_path = os.environ.get("FFMPEG_BINARY", "/usr/bin/ffmpeg")
     ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": output_path,
@@ -217,7 +218,7 @@ def _download_audio_sync(video_url: str, output_path: str) -> str:
         }],
         "quiet": True,
         "no_warnings": True,
-        "ffmpeg-location": "/usr/bin/ffmpeg",
+        "ffmpeg-location": ffmpeg_path,
         # Bot-detection bypass — ios client mimics the official YouTube app
         "cookiesfrombrowser": None,
         "extractor_args": {

@@ -1,10 +1,16 @@
 FROM python:3.11-slim
 
-# Install ffmpeg and system dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
+    ffprobe \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ffmpeg -version \
+    && which ffmpeg \
+    && which ffprobe
+
+ENV PATH="/usr/bin:${PATH}"
+ENV FFMPEG_BINARY="/usr/bin/ffmpeg"
 
 WORKDIR /app
 
@@ -12,7 +18,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-
 RUN mkdir -p ./temp_audio
 
 EXPOSE 8080
