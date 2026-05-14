@@ -19,7 +19,6 @@ logger = logging.getLogger("transcriber")
 
 _AR = r'؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿'
 
-_whisper_model = None
 _executor = ThreadPoolExecutor(max_workers=2)
 
 # ---------------------------------------------------------------------------
@@ -31,7 +30,6 @@ _YOUTUBE_DOMAINS = frozenset({
 })
 
 # Domains that serve HTML iframe embed pages (not direct video streams).
-# The transcriber fetches the HTML and extracts the underlying video URL.
 _IFRAME_DOMAINS = frozenset({
     "iframe.mediadelivery.net",   # Bunny.net CDN
     "fast.wistia.net",            # Wistia
@@ -50,7 +48,7 @@ def _detect_url_type(url: str) -> str:
     """
     Classify a video URL into one of three routing categories:
 
-    - "youtube" : YouTube.com / youtu.be  → try captions first, yt-dlp fallback
+    - "youtube" : YouTube.com / youtu.be  → try captions first, pytubefix fallback
     - "iframe"  : Known embed-CDN domains → fetch HTML to extract direct video URL
     - "direct"  : Everything else         → pass straight to yt-dlp (Vimeo, Facebook …)
     """
@@ -67,16 +65,8 @@ def _detect_url_type(url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Whisper helpers
+# Whisper post-processing (applied to Groq output)
 # ---------------------------------------------------------------------------
-
-def load_whisper_model():
-    global _whisper_model
-    if _whisper_model is None:
-        import whisper
-        _whisper_model = whisper.load_model(settings.whisper_model)
-    return _whisper_model
-
 
 def _postprocess_whisper(text: str) -> str:
     """Fix common Whisper output artifacts in mixed Arabic/English transcriptions."""
@@ -91,14 +81,6 @@ def _postprocess_whisper(text: str) -> str:
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = re.sub(r'[ \t]+', ' ', text)
     return text.strip()
-
-
-def _transcribe_audio_sync(audio_path: str, language: Optional[str]) -> Tuple[str, str]:
-    model = load_whisper_model()
-    result = model.transcribe(audio_path, task="transcribe", language=None, fp16=False)
-    detected_lang = result.get("language", "unknown")
-    text = _postprocess_whisper(result.get("text", "").strip())
-    return text, detected_lang
 
 
 # ---------------------------------------------------------------------------
@@ -129,9 +111,9 @@ def _try_youtube_captions(video_url: str) -> Optional[Tuple[str, str]]:
     except Exception as e:
         err_name = type(e).__name__
         err_str = str(e).lower()
-        # Bot-detection or sign-in wall → fall through to yt-dlp instead of erroring
+        # Bot-detection or sign-in wall → fall through to download instead of erroring
         if any(kw in err_str for kw in ("bot", "sign in", "confirm", "captcha", "blocked")):
-            logger.warning(f"[captions] bot-detection triggered ({err_name}), skipping to yt-dlp")
+            logger.warning(f"[captions] bot-detection triggered ({err_name}), skipping to download")
             return None
         print(f"[captions] failed: {err_name}")
         return None
@@ -202,10 +184,32 @@ def _extract_video_from_iframe(url: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# yt-dlp audio download
+# Audio download — pytubefix (YouTube fallback when captions unavailable)
 # ---------------------------------------------------------------------------
 
-def _download_audio_sync(video_url: str, output_path: str) -> str:
+def _download_audio_youtube(video_url: str, output_dir: str, filename: str) -> str:
+    """
+    Download audio from a YouTube URL using pytubefix.
+    No ffmpeg required — downloads the native audio stream.
+    Returns the full path to the downloaded file.
+    """
+    from pytubefix import YouTube
+    yt = YouTube(video_url)
+    audio_stream = (
+        yt.streams.filter(only_audio=True).order_by("abr").desc().first()
+    )
+    if audio_stream is None:
+        raise RuntimeError("No audio stream found for YouTube video")
+    downloaded = audio_stream.download(output_path=output_dir, filename=filename)
+    return downloaded
+
+
+# ---------------------------------------------------------------------------
+# Audio download — yt-dlp (iframe / direct URLs)
+# ---------------------------------------------------------------------------
+
+def _download_audio_ytdlp(video_url: str, output_path: str) -> str:
+    """Download audio using yt-dlp (for iframe/direct URLs — requires ffmpeg)."""
     import yt_dlp
     ffmpeg_path = os.environ.get("FFMPEG_BINARY", "/usr/bin/ffmpeg")
     ydl_opts = {
@@ -219,19 +223,6 @@ def _download_audio_sync(video_url: str, output_path: str) -> str:
         "quiet": True,
         "no_warnings": True,
         "ffmpeg-location": ffmpeg_path,
-        # Bot-detection bypass — ios client mimics the official YouTube app
-        "cookiesfrombrowser": None,
-        "extractor_args": {
-            "youtube": {"player_client": ["ios", "web_creator", "tv_embedded"]},
-        },
-        "add_headers": {
-            "User-Agent": (
-                "com.google.ios.youtube/19.29.1 "
-                "(iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X)"
-            ),
-        },
-        "sleep_interval": 2,
-        "max_sleep_interval": 5,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([video_url])
@@ -246,6 +237,25 @@ def _download_audio_sync(video_url: str, output_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Groq Whisper transcription
+# ---------------------------------------------------------------------------
+
+def _transcribe_with_groq_sync(audio_path: str) -> Tuple[str, str]:
+    """Transcribe audio using the Groq Whisper API (whisper-large-v3-turbo)."""
+    from groq import Groq
+    client = Groq(api_key=settings.groq_api_key)
+    with open(audio_path, "rb") as f:
+        transcription = client.audio.transcriptions.create(
+            model="whisper-large-v3-turbo",
+            file=f,
+            response_format="verbose_json",
+        )
+    text = _postprocess_whisper(transcription.text or "")
+    lang = getattr(transcription, "language", "unknown") or "unknown"
+    return text, lang
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -255,19 +265,19 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
 
     Routing strategy
     ----------------
-    youtube  → try YouTube captions API first; fall back to yt-dlp + Whisper
-    iframe   → fetch embed HTML to extract direct video URL; fall back to
-               passing the iframe URL directly to yt-dlp
-    direct   → pass URL straight to yt-dlp + Whisper (Vimeo, Facebook, etc.)
+    youtube  → try YouTube captions API first; fall back to pytubefix + Groq Whisper
+    iframe   → fetch embed HTML to extract direct video URL; yt-dlp + Groq Whisper
+    direct   → pass URL straight to yt-dlp + Groq Whisper (Vimeo, Facebook, etc.)
     """
     loop = asyncio.get_event_loop()
     url_type = _detect_url_type(video_url)
     logger.info(f"[transcribe] url_type={url_type!r} | {video_url[:80]}")
 
-    download_url = video_url  # may be overridden below
+    temp_dir = Path(settings.temp_audio_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── YouTube: try captions first, fall back to pytubefix + Groq ───────────
     if url_type == "youtube":
-        # ── Step 1: fast caption path ──────────────────────────────────────
         t0 = time.time()
         caption_result = await loop.run_in_executor(
             _executor, _try_youtube_captions, video_url
@@ -280,11 +290,45 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
             )
             return text, lang
         logger.info(
-            f"[transcribe] no captions ({time.time()-t0:.2f}s), falling back to yt-dlp"
+            f"[transcribe] no captions ({time.time()-t0:.2f}s), "
+            "falling back to pytubefix + Groq"
         )
 
-    elif url_type == "iframe":
-        # ── Step 1: extract direct video URL from embed page HTML ──────────
+        audio_path = None
+        try:
+            uid = uuid.uuid4().hex
+            t1 = time.time()
+            audio_path = await loop.run_in_executor(
+                _executor,
+                _download_audio_youtube,
+                video_url,
+                str(temp_dir),
+                f"audio_{uid}",
+            )
+            logger.info(f"[transcribe] pytubefix download in {time.time()-t1:.2f}s")
+
+            t2 = time.time()
+            text, detected_lang = await loop.run_in_executor(
+                _executor, _transcribe_with_groq_sync, audio_path
+            )
+            logger.info(
+                f"[transcribe] Groq done in {time.time()-t2:.2f}s | "
+                f"lang={detected_lang} words={len(text.split())}"
+            )
+            return text, detected_lang
+        except Exception as e:
+            raise RuntimeError(f"Transcription failed: {e}") from e
+        finally:
+            if audio_path and Path(audio_path).exists():
+                try:
+                    os.remove(audio_path)
+                except OSError:
+                    pass
+
+    # ── iframe: extract direct URL from embed HTML, then yt-dlp + Groq ───────
+    download_url = video_url
+
+    if url_type == "iframe":
         logger.info("[transcribe] iframe detected — attempting HTML extraction")
         t0 = time.time()
         direct_url = await loop.run_in_executor(
@@ -302,26 +346,23 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
                 "passing iframe URL directly to yt-dlp"
             )
 
-    # ── Download audio with yt-dlp, transcribe with Whisper ───────────────
-    temp_dir = Path(settings.temp_audio_dir)
-    temp_dir.mkdir(parents=True, exist_ok=True)
+    # ── yt-dlp download + Groq transcription (iframe / direct) ───────────────
     audio_base = str(temp_dir / f"audio_{uuid.uuid4().hex}")
     audio_path = None
 
     try:
         t1 = time.time()
         audio_path = await loop.run_in_executor(
-            _executor, _download_audio_sync, download_url, audio_base
+            _executor, _download_audio_ytdlp, download_url, audio_base
         )
         logger.info(f"[transcribe] audio downloaded in {time.time()-t1:.2f}s")
 
         t2 = time.time()
-        whisper_lang = None if language == "auto" else language
         text, detected_lang = await loop.run_in_executor(
-            _executor, _transcribe_audio_sync, audio_path, whisper_lang
+            _executor, _transcribe_with_groq_sync, audio_path
         )
         logger.info(
-            f"[transcribe] Whisper done in {time.time()-t2:.2f}s | "
+            f"[transcribe] Groq done in {time.time()-t2:.2f}s | "
             f"lang={detected_lang} words={len(text.split())}"
         )
         return text, detected_lang

@@ -4,6 +4,7 @@ from pathlib import Path
 
 class Settings(BaseSettings):
     gemini_api_key: str = ""
+    groq_api_key: str = ""
     whisper_model: str = "base"
     max_text_length: int = 50000
     temp_audio_dir: str = "./temp_audio"

@@ -12,6 +12,7 @@ from tests.conftest import ENGLISH_TEXT
 _MOCK_COURSE = {
     "title": "Introduction to Machine Learning",
     "description": "A beginner course covering ML fundamentals.",
+    "quiz_title": "Test Your Machine Learning Knowledge",
     "quiz": [
         {
             "question_number": 1,
@@ -64,7 +65,7 @@ class TestHealthEndpoint:
 
     def test_contains_required_fields(self, client):
         body = client.get("/api/health").json()
-        for field in ("whisper_model", "whisper_loaded", "gemini_configured",
+        for field in ("groq_configured", "gemini_configured",
                       "cache_entries", "allowed_origins"):
             assert field in body, f"Missing field: {field}"
 

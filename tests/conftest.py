@@ -127,7 +127,7 @@ def pdf_bytes():
 
 @pytest.fixture
 def client():
-    """A fresh TestClient for each test (lifespan runs but Whisper is cached globally)."""
+    """A fresh TestClient for each test."""
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
 

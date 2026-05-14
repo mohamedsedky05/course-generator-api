@@ -198,12 +198,10 @@ async def generate_endpoint(
 
 @router.get("/health")
 async def health_check():
-    from services.transcriber import _whisper_model
     from config import settings
     return {
         "status": "ok",
-        "whisper_model": settings.whisper_model,
-        "whisper_loaded": _whisper_model is not None,
+        "groq_configured": bool(settings.groq_api_key),
         "gemini_configured": bool(settings.gemini_api_key),
         "cache_entries": response_cache.size(),
         "allowed_origins": settings.allowed_origins_list,

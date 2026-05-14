@@ -318,30 +318,32 @@ class TestTranscribeVideoRouting:
     """Verify that transcribe_video dispatches correctly based on URL type."""
 
     async def test_youtube_url_tries_captions_first(self):
-        """For a YouTube URL the caption path must be attempted before yt-dlp."""
+        """For a YouTube URL the caption path must be attempted before pytubefix."""
         from services.transcriber import transcribe_video
 
         caption_mock = MagicMock(return_value=("transcription text " * 20, "en"))
 
         with patch("services.transcriber._try_youtube_captions", caption_mock), \
-             patch("services.transcriber._download_audio_sync") as dl_mock:
+             patch("services.transcriber._download_audio_youtube") as dl_mock:
             result = await transcribe_video("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
         caption_mock.assert_called_once()
-        dl_mock.assert_not_called()   # yt-dlp must NOT have been called
+        dl_mock.assert_not_called()   # pytubefix must NOT have been called
         assert result[0].startswith("transcription text")
 
-    async def test_youtube_falls_back_to_ytdlp_when_no_captions(self):
-        """If captions return None the transcriber must fall through to yt-dlp."""
+    async def test_youtube_falls_back_to_pytubefix_when_no_captions(self):
+        """If captions return None the transcriber must fall through to pytubefix + Groq."""
         from services.transcriber import transcribe_video
 
         with patch("services.transcriber._try_youtube_captions", return_value=None), \
-             patch("services.transcriber._download_audio_sync", return_value="/tmp/a.mp3") as dl_mock, \
-             patch("services.transcriber._transcribe_audio_sync", return_value=("whisper text " * 10, "en")):
+             patch("services.transcriber._download_audio_youtube",
+                   return_value="/tmp/a.mp4") as dl_mock, \
+             patch("services.transcriber._transcribe_with_groq_sync",
+                   return_value=("groq text " * 10, "en")):
             result = await transcribe_video("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
         dl_mock.assert_called_once()
-        assert "whisper" in result[0]
+        assert "groq" in result[0]
 
     async def test_iframe_url_tries_html_extraction_first(self):
         """For an iframe URL, _extract_video_from_iframe must be called."""
@@ -351,8 +353,8 @@ class TestTranscribeVideoRouting:
 
         with patch("services.transcriber._extract_video_from_iframe",
                    return_value=extracted_url) as extract_mock, \
-             patch("services.transcriber._download_audio_sync", return_value="/tmp/a.mp3"), \
-             patch("services.transcriber._transcribe_audio_sync",
+             patch("services.transcriber._download_audio_ytdlp", return_value="/tmp/a.mp3"), \
+             patch("services.transcriber._transcribe_with_groq_sync",
                    return_value=("audio text " * 10, "en")):
             result = await transcribe_video(
                 "https://iframe.mediadelivery.net/embed/578375/abc?token=xyz"
@@ -368,9 +370,9 @@ class TestTranscribeVideoRouting:
         iframe_url = "https://iframe.mediadelivery.net/embed/578375/abc"
 
         with patch("services.transcriber._extract_video_from_iframe", return_value=None), \
-             patch("services.transcriber._download_audio_sync",
+             patch("services.transcriber._download_audio_ytdlp",
                    return_value="/tmp/a.mp3") as dl_mock, \
-             patch("services.transcriber._transcribe_audio_sync",
+             patch("services.transcriber._transcribe_with_groq_sync",
                    return_value=("audio text " * 10, "en")):
             await transcribe_video(iframe_url)
 
@@ -385,8 +387,8 @@ class TestTranscribeVideoRouting:
 
         with patch("services.transcriber._try_youtube_captions") as cap_mock, \
              patch("services.transcriber._extract_video_from_iframe") as iframe_mock, \
-             patch("services.transcriber._download_audio_sync", return_value="/tmp/a.mp3"), \
-             patch("services.transcriber._transcribe_audio_sync",
+             patch("services.transcriber._download_audio_ytdlp", return_value="/tmp/a.mp3"), \
+             patch("services.transcriber._transcribe_with_groq_sync",
                    return_value=("vimeo text " * 10, "en")):
             result = await transcribe_video("https://vimeo.com/123456789")
 

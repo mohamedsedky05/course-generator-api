@@ -22,13 +22,7 @@ logger = logging.getLogger("course_generator")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting up — pre-loading Whisper model...")
-    try:
-        from services.transcriber import load_whisper_model
-        load_whisper_model()
-        logger.info("Whisper model loaded successfully.")
-    except Exception as e:
-        logger.warning(f"Could not pre-load Whisper model: {e}")
+    logger.info("Starting up.")
     yield
     logger.info("Shutting down.")
 
