@@ -217,17 +217,36 @@ def _download_audio_ytdlp(video_url: str, output_path: str) -> str:
         "quiet": True,
         "no_warnings": True,
         "ffmpeg-location": ffmpeg_path,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "web"],
-            },
-        },
     }
     cookie_file = _get_provider_cookie_file(video_url)
     if cookie_file:
         ydl_opts["cookiefile"] = cookie_file
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([video_url])
+
+    option_sets = [ydl_opts]
+    if (urlparse(video_url).hostname or "").lower() in _YOUTUBE_DOMAINS:
+        # Some YouTube sessions expose no downloadable format for a forced
+        # client. Retry with yt-dlp's default client negotiation instead.
+        option_sets.insert(0, {
+            **ydl_opts,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "web"],
+                },
+            },
+        })
+
+    for attempt, options in enumerate(option_sets, 1):
+        try:
+            with yt_dlp.YoutubeDL(options) as ydl:
+                ydl.download([video_url])
+            break
+        except yt_dlp.utils.DownloadError as exc:
+            if attempt == len(option_sets):
+                raise
+            logger.warning(
+                "[transcribe] yt-dlp client selection failed; retrying with default clients"
+            )
+
     mp3_path = output_path + ".mp3"
     if Path(mp3_path).exists():
         return mp3_path
