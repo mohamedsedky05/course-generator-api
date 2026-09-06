@@ -220,38 +220,52 @@ def _download_audio_ytdlp(video_url: str, output_path: str) -> str:
         "js_runtimes": {"node": {}},
         "remote_components": ["ejs:github"],
     }
+    if settings.youtube_proxy and (urlparse(video_url).hostname or "").lower() in _YOUTUBE_DOMAINS:
+        ydl_opts["proxy"] = settings.youtube_proxy
     cookie_file = _get_provider_cookie_file(video_url)
 
     is_youtube = (urlparse(video_url).hostname or "").lower() in _YOUTUBE_DOMAINS
-    option_sets = []
+    option_sets: list[tuple[str, dict]] = []
     if is_youtube:
         # Prefer anonymous extraction for public videos. Browser cookies can be
         # stale or IP-bound and can make otherwise public videos fail.
-        option_sets.append(ydl_opts)
+        option_sets.append(("anonymous-default", ydl_opts))
         if cookie_file:
-            option_sets.append({**ydl_opts, "cookiefile": cookie_file})
-        option_sets.append({
-            **ydl_opts,
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["web_embedded", "tv"],
+            option_sets.append(("cookie-default", {**ydl_opts, "cookiefile": cookie_file}))
+        option_sets.append(("anonymous-embedded", {
+                **ydl_opts,
+                "extractor_args": {
+                    "youtube": {
+                        "player_client": ["web_embedded", "tv"],
+                    },
                 },
-            },
-        })
+            }))
+        if cookie_file:
+            option_sets.append(("cookie-embedded", {
+                **option_sets[-1][1],
+                "cookiefile": cookie_file,
+            }))
     else:
         if cookie_file:
             ydl_opts["cookiefile"] = cookie_file
-        option_sets.append(ydl_opts)
+        option_sets.append(("provider-default", ydl_opts))
 
-    for attempt, options in enumerate(option_sets, 1):
+    errors: list[str] = []
+    for attempt, (strategy, options) in enumerate(option_sets, 1):
         try:
             with yt_dlp.YoutubeDL(options) as ydl:
                 ydl.download([video_url])
             break
         except yt_dlp.utils.DownloadError as exc:
+            errors.append(f"{strategy}: {str(exc).splitlines()[-1]}")
             if attempt == len(option_sets):
-                raise
-            logger.warning("[transcribe] yt-dlp attempt failed; retrying with alternate authentication")
+                raise RuntimeError(
+                    "All video download strategies failed. "
+                    + " | ".join(errors)
+                ) from exc
+            logger.warning(
+                f"[transcribe] yt-dlp strategy {strategy} failed; trying next strategy"
+            )
 
     mp3_path = output_path + ".mp3"
     if Path(mp3_path).exists():

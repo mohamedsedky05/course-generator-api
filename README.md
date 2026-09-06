@@ -197,6 +197,7 @@ curl -X POST http://localhost:8000/api/generate \
 | `GROQ_API_KEY` | *(required for audio fallback)* | API key for Whisper-compatible audio transcription |
 | `GROQ_TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Speech-to-text model used after video audio is downloaded |
 | `YOUTUBE_COOKIES_B64` | *(optional)* | Base64-encoded Netscape `cookies.txt` used by server-side `yt-dlp` when YouTube blocks anonymous downloads |
+| `YOUTUBE_PROXY` | *(optional)* | HTTPS/SOCKS proxy used for YouTube when the DigitalOcean IP is blocked |
 | `VIMEO_COOKIES_B64` | *(optional)* | Base64-encoded Netscape `cookies.txt` used when Vimeo requires a logged-in web client |
 | `MAX_TEXT_LENGTH` | `50000` | Max characters of text to send to Claude |
 | `TEMP_AUDIO_DIR` | `./temp_audio` | Temporary directory for downloaded audio files |

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_transcription_model: str = "whisper-large-v3-turbo"
     youtube_cookies_b64: str = ""
+    youtube_proxy: str = ""
     vimeo_cookies_b64: str = ""
     basic_auth_username: str = ""
     basic_auth_password: str = ""
