@@ -1,6 +1,6 @@
 """
-Shared fixtures for the course_generator test suite.
-Run from the course_generator/ directory:
+Shared fixtures for the lesson_generator test suite.
+Run from the lesson_generator/ directory:
     pytest                            # skips integration tests
     pytest -m integration             # only integration tests
     pytest -m "not integration"       # only unit/mock tests

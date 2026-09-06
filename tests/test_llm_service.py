@@ -25,6 +25,9 @@ def test_claude_credentials_and_models_configured():
 SAMPLE_RESULT = {
     "title": "Introduction to Machine Learning",
     "description": "A beginner-level overview of ML fundamentals.",
+    "content": "Machine learning enables systems to learn from data.",
+    "objectives": ["Explain the core idea of machine learning."],
+    "key_points": ["Machine learning learns from data."],
     "quiz": [
         {
             "question_number": 1,
@@ -122,30 +125,33 @@ class TestGenerateContentMocked:
     async def test_returns_dict_with_required_keys(self, english_text):
         call_num = 0
 
-        async def mock_gemini(prompt):
+        async def mock_gemini(prompt, *args):
             nonlocal call_num
             call_num += 1
             if call_num == 1:
                 return english_text          # clean_transcription pass-through
             return json.dumps(SAMPLE_RESULT) # generation call
 
-        with patch("services.llm_service._call_gemini", new=mock_gemini):
+        with patch("services.llm_service._call_claude", new=mock_gemini):
             result = await generate_content(english_text, 2)
 
         assert isinstance(result, dict)
         assert "title" in result
         assert "description" in result
+        assert "content" in result
+        assert "objectives" in result
+        assert "key_points" in result
         assert "quiz" in result
 
     async def test_quiz_is_list(self, english_text):
         call_num = 0
 
-        async def mock_gemini(prompt):
+        async def mock_gemini(prompt, *args):
             nonlocal call_num
             call_num += 1
             return english_text if call_num == 1 else json.dumps(SAMPLE_RESULT)
 
-        with patch("services.llm_service._call_gemini", new=mock_gemini):
+        with patch("services.llm_service._call_claude", new=mock_gemini):
             result = await generate_content(english_text, 2)
 
         assert isinstance(result["quiz"], list)
@@ -291,6 +297,10 @@ class TestCallGeminiRetry:
 
 @pytest.mark.integration
 @pytest.mark.slow
+@pytest.mark.skipif(
+    not settings.effective_anthropic_api_key,
+    reason="ANTHROPIC_API_KEY is not configured",
+)
 class TestLLMIntegration:
     async def test_clean_transcription_fixes_arabic_transliterations(self):
         text = "الراوتر يستخدم بروتوكول TCP لنقل البيانات عبر الإنترنت"

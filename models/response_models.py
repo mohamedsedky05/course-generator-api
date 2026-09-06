@@ -19,9 +19,12 @@ class TrueFalseQuestion(BaseModel):
     explanation: str
 
 
-class CourseResult(BaseModel):
+class LessonResult(BaseModel):
     title: str
     description: str
+    content: str
+    objectives: List[str]
+    key_points: List[str]
     quiz_title: str
     quiz: List[Union[MCQQuestion, TrueFalseQuestion]]
 
@@ -36,7 +39,8 @@ class GenerateResponse(BaseModel):
     input_type: str
     detected_language: str
     transcript: str          # always populated — raw extracted text
-    course: CourseResult
+    lesson: LessonResult
+    course: LessonResult | None = None
     metadata: Metadata
 
 

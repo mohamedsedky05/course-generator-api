@@ -30,14 +30,16 @@ def _get_client() -> AsyncAnthropic:
 # Prompts
 # ---------------------------------------------------------------------------
 
-GENERATION_PROMPT_PREFIX = """You are an expert educational content organizer.
+GENERATION_PROMPT_PREFIX = """You are an expert educational lesson writer.
 
-Convert the following text into a structured educational output.
+Convert the following text into one complete, self-contained lesson.
 
 STRICT CONTENT RULES — THIS IS THE MOST IMPORTANT PART:
 - Use ONLY the information explicitly present in the provided text
 - Do NOT add any external knowledge, examples, or analogies
 - Every quiz question must be answerable ONLY from the provided text
+- Write a clear lesson body that teaches the source material in a logical order
+- Learning objectives and key points must be derived only from the provided text
 - Respond ONLY in valid JSON with no markdown formatting
 
 Output language must match the input content language.
@@ -46,6 +48,9 @@ Required JSON schema (respond with NOTHING else):
 {{
   "title": "A concise title derived from the text",
   "description": "2-3 sentence description using only what is in the text",
+    "content": "The complete lesson body, organized into clear paragraphs",
+    "objectives": ["A measurable objective from the text"],
+    "key_points": ["An important point from the text"],
   "quiz_title": "A short engaging title for the quiz section, derived from the content",
   "quiz": [
     {{
@@ -237,10 +242,10 @@ async def clean_transcription(text: str) -> str:
         return text
 
 
-async def generate_content(text: str, num_quiz_questions: int) -> dict:
+async def generate_lesson(text: str, num_quiz_questions: int) -> dict:
     """
-    Single-stage pipeline: clean the text then generate title + description + quiz.
-    Returns a dict with keys: title, description, quiz.
+    Clean the text then generate a complete lesson and quiz.
+    Returns a dict with lesson content and quiz fields.
     """
     t_total = time.time()
 
@@ -248,7 +253,7 @@ async def generate_content(text: str, num_quiz_questions: int) -> dict:
     cleaned_text = await clean_transcription(text)
 
     # Generate title + description + quiz in one call
-    logger.info(f"[llm] Generating content ({num_quiz_questions} quiz questions)")
+    logger.info(f"[llm] Generating lesson ({num_quiz_questions} quiz questions)")
     prompt = (
         f"Generate exactly {num_quiz_questions} quiz questions "
         "(70% MCQ with 4 options, 30% True/False).\n\n"
@@ -267,7 +272,12 @@ async def generate_content(text: str, num_quiz_questions: int) -> dict:
         result = _parse_json_safe(raw2)
 
     logger.info(
-        f"[llm] generate_content done in {time.time()-t_total:.2f}s | "
+        f"[llm] generate_lesson done in {time.time()-t_total:.2f}s | "
         f"quiz_items={len(result.get('quiz', []))}"
     )
     return result
+
+
+
+# Backward-compatible service name for existing callers during migration.
+generate_content = generate_lesson

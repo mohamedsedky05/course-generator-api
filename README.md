@@ -1,13 +1,13 @@
-# AI Course Generator API
+# AI Lesson Generator API
 
-A production-ready FastAPI backend that converts text, documents, or YouTube videos into structured educational courses using Anthropic Claude for generation and transcription.
+A production-ready FastAPI backend that converts text, documents, or YouTube videos into complete lessons using Anthropic Claude for lesson generation and Groq Whisper for audio transcription.
 
 ---
 
 ## Features
 
 - **3 input types:** plain text, file upload (PDF/DOCX/PPTX/TXT), YouTube URL
-- **LLM:** Anthropic Claude Sonnet for structured course generation
+- **LLM:** Anthropic Claude Sonnet for structured lesson generation
 - **Transcription:** Claude-based processing for audio/video workflows
 - **Arabic + English** support with auto language detection
 - **Two-stage prompting** for structural analysis then content generation
@@ -55,7 +55,7 @@ Make sure you have Python 3.10 or newer: `python --version`
 
 ```bash
 # Clone / navigate to the project
-cd course_generator
+cd lesson_generator
 
 # Create and activate virtual environment
 python -m venv venv
@@ -97,7 +97,6 @@ curl http://localhost:8000/api/health
 ```bash
 curl -X POST http://localhost:8000/api/generate \
   -F "text=Machine learning is a subset of artificial intelligence that enables systems to learn from data. Supervised learning uses labeled datasets to train models. Common algorithms include linear regression, decision trees, and neural networks. Unsupervised learning finds patterns in unlabeled data using clustering and dimensionality reduction techniques." \
-  -F "num_lectures=2" \
   -F "num_quiz_questions=5"
 ```
 
@@ -107,7 +106,6 @@ curl -X POST http://localhost:8000/api/generate \
 ```bash
 curl -X POST http://localhost:8000/api/generate \
   -F "file=@/path/to/your/document.pdf" \
-  -F "num_lectures=3" \
   -F "num_quiz_questions=10"
 ```
 
@@ -117,7 +115,6 @@ curl -X POST http://localhost:8000/api/generate \
 ```bash
 curl -X POST http://localhost:8000/api/generate \
   -F "video_url=https://www.youtube.com/watch?v=YOUR_VIDEO_ID" \
-  -F "num_lectures=4" \
   -F "num_quiz_questions=10" \
   -F "output_language=auto"
 ```
@@ -132,21 +129,12 @@ curl -X POST http://localhost:8000/api/generate \
   "input_type": "youtube_video",
   "detected_language": "ar",
   "transcription": "...",
-  "course": {
+  "lesson": {
     "title": "...",
     "description": "...",
-    "summary": "...",
-    "subject": "...",
-    "difficulty": "Intermediate",
-    "key_topics": ["...", "..."],
-    "lectures": [
-      {
-        "lecture_number": 1,
-        "title": "...",
-        "content": "...",
-        "objectives": ["...", "...", "..."]
-      }
-    ],
+    "content": "...",
+    "objectives": ["...", "..."],
+    "key_points": ["...", "..."],
     "quiz": [
       {
         "question_number": 1,
@@ -180,12 +168,45 @@ curl -X POST http://localhost:8000/api/generate \
 | Variable | Default | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | *(required)* | Your Anthropic API key |
-| `CLAUDE_GENERATION_MODEL` | `claude-sonnet-4-20250514` | Claude model used for content generation |
-| `CLAUDE_CLEANUP_MODEL` | `claude-3-5-haiku-20241022` | Claude model used for text cleanup |
+| `CLAUDE_GENERATION_MODEL` | `claude-sonnet-4-6` | Claude model used for lesson generation |
+| `CLAUDE_CLEANUP_MODEL` | `claude-haiku-4-5-20251001` | Claude model used for text cleanup |
+| `CLAUDE_TRANSCRIPTION_MODEL` | `claude-sonnet-4-6` | Legacy setting; Claude does not receive audio |
+| `GROQ_API_KEY` | *(required for audio fallback)* | API key for Whisper-compatible audio transcription |
+| `GROQ_TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Speech-to-text model used after video audio is downloaded |
+| `YOUTUBE_COOKIES_B64` | *(optional)* | Base64-encoded Netscape `cookies.txt` used by server-side `yt-dlp` when YouTube blocks anonymous downloads |
 | `MAX_TEXT_LENGTH` | `50000` | Max characters of text to send to Claude |
 | `TEMP_AUDIO_DIR` | `./temp_audio` | Temporary directory for downloaded audio files |
 
 > Recommended default models: `claude-sonnet-4-20250514` for generation and `claude-3-5-haiku-20241022` for cleanup.
+
+### Production YouTube cookies
+
+DigitalOcean App Platform has no browser profile, so `yt-dlp` cannot use
+`--cookies-from-browser` there. If YouTube blocks anonymous downloads, export a
+Netscape-format `cookies.txt` from a dedicated YouTube account and base64-encode
+it locally:
+
+```bash
+base64 -w 0 cookies.txt > cookies.txt.b64
+```
+
+On Windows PowerShell:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("cookies.txt")) | Set-Content -NoNewline cookies.txt.b64
+```
+
+Set the contents of `cookies.txt.b64` as the encrypted App Platform variable
+`YOUTUBE_COOKIES_B64`. The application materializes it as a temporary cookie
+file only inside the container. Never commit `cookies.txt`, the base64 value,
+or either value to chat. If the encoded value is too large for App Platform
+environment-variable limits, store the cookie file in a private object store
+and download it at startup instead.
+
+Anthropic Claude does not currently accept audio content in the Messages API.
+The application therefore uses Groq Whisper for audio transcription and Claude
+for cleanup and lesson generation. Set `GROQ_API_KEY` for Bunny, Vimeo, and
+other videos that do not provide a usable transcript.
 
 ---
 

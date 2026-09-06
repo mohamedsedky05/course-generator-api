@@ -1,6 +1,6 @@
-name: course-generator-api
+name: lesson-generator-api
 services:
-- name: course-generator-api
+- name: lesson-generator-api
   dockerfile_path: Dockerfile
   source_dir: /
   http_port: 8080

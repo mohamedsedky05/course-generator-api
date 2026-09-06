@@ -21,6 +21,7 @@ logger = logging.getLogger("transcriber")
 _AR = r'؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿'
 
 _executor = ThreadPoolExecutor(max_workers=2)
+_youtube_cookie_file: Optional[str] = None
 
 # ---------------------------------------------------------------------------
 # URL type classification
@@ -66,7 +67,7 @@ def _detect_url_type(url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Whisper post-processing (applied to Claude transcript output)
+# Whisper post-processing (applied to speech-to-text output)
 # ---------------------------------------------------------------------------
 
 def _postprocess_whisper(text: str) -> str:
@@ -222,6 +223,9 @@ def _download_audio_ytdlp(video_url: str, output_path: str) -> str:
             },
         },
     }
+    cookie_file = _get_youtube_cookie_file()
+    if cookie_file:
+        ydl_opts["cookiefile"] = cookie_file
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([video_url])
     mp3_path = output_path + ".mp3"
@@ -234,35 +238,68 @@ def _download_audio_ytdlp(video_url: str, output_path: str) -> str:
     raise FileNotFoundError("Audio file not found after yt-dlp download")
 
 
+def _get_youtube_cookie_file() -> Optional[str]:
+    """Materialize encrypted production cookies for yt-dlp without logging them."""
+    global _youtube_cookie_file
+    encoded = settings.youtube_cookies_b64.strip()
+    if not encoded:
+        return None
+    if _youtube_cookie_file and Path(_youtube_cookie_file).exists():
+        return _youtube_cookie_file
+
+    try:
+        cookie_data = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise RuntimeError("YOUTUBE_COOKIES_B64 is not valid base64") from exc
+    if b"# Netscape HTTP Cookie File" not in cookie_data[:200]:
+        raise RuntimeError("YOUTUBE_COOKIES_B64 must contain a Netscape cookies.txt file")
+
+    cookie_path = Path(settings.temp_audio_dir) / "youtube-cookies.txt"
+    cookie_path.write_bytes(cookie_data)
+    try:
+        os.chmod(cookie_path, 0o600)
+    except OSError:
+        pass
+    _youtube_cookie_file = str(cookie_path)
+    return _youtube_cookie_file
+
+
 # ---------------------------------------------------------------------------
-# Claude transcription
+# Speech-to-text transcription
 # ---------------------------------------------------------------------------
 
-def _transcribe_with_claude_sync(audio_path: str) -> Tuple[str, str]:
-    """Transcribe audio using Claude with best-in-class multimodal reasoning."""
-    from anthropic import Anthropic
+def _transcribe_with_groq_sync(audio_path: str) -> Tuple[str, str]:
+    """Transcribe audio with Groq's Whisper-compatible speech-to-text API."""
+    api_key = settings.effective_groq_api_key
+    if not api_key:
+        raise RuntimeError(
+            "GROQ_API_KEY is required for audio transcription; "
+            "Anthropic Claude does not accept audio input"
+        )
 
-    client = Anthropic(api_key=settings.effective_anthropic_api_key)
-    with open(audio_path, "rb") as f:
-        media = f.read()
+    with open(audio_path, "rb") as audio_file:
+        response = httpx.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            files={"file": (Path(audio_path).name, audio_file, "audio/mpeg")},
+            data={
+                "model": settings.groq_transcription_model,
+                "response_format": "verbose_json",
+            },
+            timeout=180,
+        )
+    if response.is_error:
+        raise RuntimeError(f"Speech-to-text provider returned HTTP {response.status_code}")
 
-    response = client.messages.create(
-        model=settings.claude_transcription_model,
-        max_tokens=4096,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Transcribe this audio accurately. Preserve the original language and return only the transcript text, with no commentary."},
-                {"type": "input_audio", "input_audio": {"data": base64.b64encode(media).decode("utf-8"), "format": "mp3"}},
-            ],
-        }],
-    )
-    text = _postprocess_whisper("".join(block.text for block in response.content if getattr(block, "type", None) == "text"))
-    return text.strip(), "unknown"
+    payload = response.json()
+    text = _postprocess_whisper(str(payload.get("text", "")))
+    if not text:
+        raise RuntimeError("Speech-to-text provider returned an empty transcript")
+    return text, str(payload.get("language", "unknown"))
 
 
-# Backward-compatibility alias for older tests and callers.
-_transcribe_with_groq_sync = _transcribe_with_claude_sync
+# Backward-compatible alias for older tests and callers.
+_transcribe_with_claude_sync = _transcribe_with_groq_sync
 
 
 # ---------------------------------------------------------------------------
@@ -275,9 +312,9 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
 
     Routing strategy
     ----------------
-    youtube  → try YouTube captions API first; fall back to yt-dlp + Claude
-    iframe   → fetch embed HTML to extract direct video URL; yt-dlp + Claude
-    direct   → pass URL straight to yt-dlp + Claude (Vimeo, Facebook, etc.)
+    youtube  → try YouTube captions API first; fall back to yt-dlp + Whisper
+    iframe   → fetch embed HTML to extract direct video URL; yt-dlp + Whisper
+    direct   → pass URL straight to yt-dlp + Whisper (Vimeo, Facebook, etc.)
     """
     loop = asyncio.get_event_loop()
     url_type = _detect_url_type(video_url)
@@ -286,7 +323,7 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
     temp_dir = Path(settings.temp_audio_dir)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── YouTube: try captions first, fall back to yt-dlp + Claude ──────────
+    # ── YouTube: try captions first, fall back to yt-dlp + Whisper ──────────
     if url_type == "youtube":
         t0 = time.time()
         caption_result = await loop.run_in_executor(
@@ -301,7 +338,7 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
             return text, lang
         logger.info(
             f"[transcribe] no captions ({time.time()-t0:.2f}s), "
-            "falling back to yt-dlp + Claude"
+            "falling back to yt-dlp + Whisper"
         )
 
         audio_path = None
@@ -322,7 +359,7 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
                 _executor, _transcribe_with_groq_sync, audio_path
             )
             logger.info(
-                f"[transcribe] Claude done in {time.time()-t2:.2f}s | "
+                f"[transcribe] Whisper done in {time.time()-t2:.2f}s | "
                 f"lang={detected_lang} words={len(text.split())}"
             )
             return text, detected_lang
@@ -335,7 +372,7 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
                 except OSError:
                     pass
 
-    # ── iframe: extract direct URL from embed HTML, then yt-dlp + Groq ───────
+    # ── iframe: extract direct URL from embed HTML, then yt-dlp + Whisper ────
     download_url = video_url
 
     if url_type == "iframe":
@@ -356,7 +393,7 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
                 "passing iframe URL directly to yt-dlp"
             )
 
-    # ── yt-dlp download + Claude transcription (iframe / direct) ───────────
+    # ── yt-dlp download + Whisper transcription (iframe / direct) ──────────
     audio_base = str(temp_dir / f"audio_{uuid.uuid4().hex}")
     audio_path = None
 
@@ -372,7 +409,7 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
             _executor, _transcribe_with_groq_sync, audio_path
         )
         logger.info(
-            f"[transcribe] Claude done in {time.time()-t2:.2f}s | "
+            f"[transcribe] Whisper done in {time.time()-t2:.2f}s | "
             f"lang={detected_lang} words={len(text.split())}"
         )
         return text, detected_lang

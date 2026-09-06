@@ -15,7 +15,7 @@ from services.extractor import (
     SUPPORTED_EXTENSIONS,
 )
 from services.transcriber import transcribe_video
-from services.llm_service import generate_content
+from services.llm_service import generate_content, generate_lesson
 from utils.rate_limit import limiter
 
 router = APIRouter(prefix="/api", tags=["generate"])
@@ -181,6 +181,8 @@ async def generate_endpoint(
         "input_type": input_type,
         "detected_language": detected_language,
         "transcript": transcript,
+        "lesson": result,
+        # Temporary compatibility alias while clients migrate to lesson.
         "course": result,
         "metadata": {
             "processing_time_seconds": processing_time,

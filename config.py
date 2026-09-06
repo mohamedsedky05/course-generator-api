@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     claude_generation_model: str = "claude-sonnet-4-6"
     claude_cleanup_model: str = "claude-haiku-4-5-20251001"
     claude_transcription_model: str = "claude-sonnet-4-6"
+    groq_api_key: str = ""
+    groq_transcription_model: str = "whisper-large-v3-turbo"
+    youtube_cookies_b64: str = ""
     max_text_length: int = 50000
     temp_audio_dir: str = "./temp_audio"
     allowed_origins: str = "*"
@@ -23,6 +26,10 @@ class Settings(BaseSettings):
             or os.getenv("CLAUDE_API_KEY")
             or ""
         )
+
+    @property
+    def effective_groq_api_key(self) -> str:
+        return self.groq_api_key or os.getenv("GROQ_API_KEY") or ""
 
     @property
     def allowed_origins_list(self) -> list[str]:

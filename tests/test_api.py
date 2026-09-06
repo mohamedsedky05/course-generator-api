@@ -1,5 +1,6 @@
 """API endpoint tests using FastAPI TestClient."""
 import io
+import os
 import pytest
 from unittest.mock import AsyncMock
 
@@ -9,9 +10,12 @@ from tests.conftest import ENGLISH_TEXT
 # Shared mock data  (new simplified schema: title + description + quiz only)
 # ---------------------------------------------------------------------------
 
-_MOCK_COURSE = {
+_MOCK_LESSON = {
     "title": "Introduction to Machine Learning",
-    "description": "A beginner course covering ML fundamentals.",
+    "description": "A beginner lesson covering ML fundamentals.",
+    "content": "Machine learning enables systems to learn from data.",
+    "objectives": ["Explain the core idea of machine learning."],
+    "key_points": ["Machine learning learns from data."],
     "quiz_title": "Test Your Machine Learning Knowledge",
     "quiz": [
         {
@@ -38,7 +42,7 @@ _MOCK_TRANSCRIPTION = (ENGLISH_TEXT, "en")
 @pytest.fixture
 def mock_llm(monkeypatch):
     """Patch generate_content at the router level to return a fake result."""
-    mock = AsyncMock(return_value=_MOCK_COURSE)
+    mock = AsyncMock(return_value=_MOCK_LESSON)
     monkeypatch.setattr("routers.generate.generate_content", mock)
     return mock
 
@@ -185,22 +189,18 @@ class TestGeneratePlainText:
         body = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()
         assert body["input_type"] == "plain_text"
 
-    def test_course_key_present(self, client, mock_llm):
+    def test_lesson_key_present(self, client, mock_llm):
         body = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()
-        assert "course" in body
+        assert "lesson" in body
 
-    def test_course_has_title(self, client, mock_llm):
-        course = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()["course"]
-        assert "title" in course
+    def test_lesson_has_required_fields(self, client, mock_llm):
+        lesson = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()["lesson"]
+        for field in ("title", "description", "content", "objectives", "key_points", "quiz"):
+            assert field in lesson
 
-    def test_course_has_description(self, client, mock_llm):
-        course = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()["course"]
-        assert "description" in course
-
-    def test_course_has_quiz(self, client, mock_llm):
-        course = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()["course"]
-        assert "quiz" in course
-        assert isinstance(course["quiz"], list)
+    def test_course_alias_matches_lesson_during_migration(self, client, mock_llm):
+        body = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()
+        assert body["course"] == body["lesson"]
 
     def test_metadata_key_present(self, client, mock_llm):
         body = client.post("/api/generate", data={"text": ENGLISH_TEXT}).json()
@@ -330,7 +330,7 @@ class TestCaching:
         url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         r1 = client.post("/api/generate", data={"video_url": url}).json()
         r2 = client.post("/api/generate", data={"video_url": url}).json()
-        assert r1["course"]["title"] == r2["course"]["title"]
+        assert r1["lesson"]["title"] == r2["lesson"]["title"]
 
     def test_different_urls_not_shared(self, client, mock_llm, mock_transcribe):
         url1 = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -403,6 +403,10 @@ class TestErrorMessages:
 
 @pytest.mark.integration
 @pytest.mark.slow
+@pytest.mark.skipif(
+    not (os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")),
+    reason="ANTHROPIC_API_KEY is not configured",
+)
 class TestYouTubeEndToEnd:
     def test_real_video_returns_success(self, client):
         r = client.post("/api/generate", data={
@@ -415,8 +419,9 @@ class TestYouTubeEndToEnd:
         assert body["input_type"] == "video"
         assert body["transcript"] is not None
         assert len(body["transcript"]) > 0
-        assert "course" in body
-        assert "title" in body["course"]
-        assert "description" in body["course"]
-        assert isinstance(body["course"]["quiz"], list)
-        assert len(body["course"]["quiz"]) >= 1
+        assert "lesson" in body
+        assert "title" in body["lesson"]
+        assert "description" in body["lesson"]
+        assert "content" in body["lesson"]
+        assert isinstance(body["lesson"]["quiz"], list)
+        assert len(body["lesson"]["quiz"]) >= 1

@@ -17,7 +17,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
-logger = logging.getLogger("course_generator")
+logger = logging.getLogger("lesson_generator")
 
 
 @asynccontextmanager
@@ -28,8 +28,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="AI Course Generator",
-    description="Generate structured educational content from text, files, or YouTube videos.",
+    title="AI Lesson Generator",
+    description="Generate complete lessons from text, files, or YouTube videos.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -80,4 +80,4 @@ app.include_router(generate_router)
 
 @app.get("/")
 async def root():
-    return {"message": "AI Course Generator API is running. See /docs for usage."}
+    return {"message": "AI Lesson Generator API is running. See /docs for usage."}

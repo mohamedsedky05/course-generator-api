@@ -40,34 +40,38 @@ def chunk_text(text: str, max_words: int = MAX_WORDS_PER_CHUNK) -> List[str]:
     return chunks
 
 
-def merge_course_chunks(chunk_results: list) -> dict:
+def merge_lesson_chunks(chunk_results: list) -> dict:
     if len(chunk_results) == 1:
         return chunk_results[0]
 
     base = chunk_results[0]
-    all_lectures = list(base.get("lectures", []))
     all_quiz = list(base.get("quiz", []))
-    all_topics = list(base.get("key_topics", []))
-    summaries = [base.get("summary", "")]
+    all_content = [base.get("content", "")]
+    all_objectives = list(base.get("objectives", []))
+    all_key_points = list(base.get("key_points", []))
 
     for result in chunk_results[1:]:
-        all_lectures.extend(result.get("lectures", []))
         all_quiz.extend(result.get("quiz", []))
-        topics = result.get("key_topics", [])
-        for t in topics:
-            if t not in all_topics:
-                all_topics.append(t)
-        summaries.append(result.get("summary", ""))
+        if result.get("content"):
+            all_content.append(result["content"])
+        for objective in result.get("objectives", []):
+            if objective not in all_objectives:
+                all_objectives.append(objective)
+        for point in result.get("key_points", []):
+            if point not in all_key_points:
+                all_key_points.append(point)
 
-    # Re-number lectures and quiz questions
-    for i, lec in enumerate(all_lectures, 1):
-        lec["lecture_number"] = i
+    # Re-number quiz questions after combining chunk results.
     for i, q in enumerate(all_quiz, 1):
         q["question_number"] = i
 
-    base["lectures"] = all_lectures
+    base["content"] = "\n\n".join(all_content)
+    base["objectives"] = all_objectives[:10]
+    base["key_points"] = all_key_points[:10]
     base["quiz"] = all_quiz
-    base["key_topics"] = all_topics[:10]
-    base["summary"] = " ".join(s for s in summaries if s)
 
     return base
+
+
+# Backward-compatible name during the course-to-lesson migration.
+merge_course_chunks = merge_lesson_chunks
