@@ -218,6 +218,7 @@ def _download_audio_ytdlp(video_url: str, output_path: str) -> str:
         "no_warnings": True,
         "ffmpeg-location": ffmpeg_path,
         "js_runtimes": {"node": {}},
+        "remote_components": ["ejs:github"],
     }
     cookie_file = _get_provider_cookie_file(video_url)
 
@@ -229,6 +230,14 @@ def _download_audio_ytdlp(video_url: str, output_path: str) -> str:
         option_sets.append(ydl_opts)
         if cookie_file:
             option_sets.append({**ydl_opts, "cookiefile": cookie_file})
+        option_sets.append({
+            **ydl_opts,
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["web_embedded", "tv"],
+                },
+            },
+        })
     else:
         if cookie_file:
             ydl_opts["cookiefile"] = cookie_file
