@@ -49,7 +49,7 @@ def _detect_url_type(url: str) -> str:
     """
     Classify a video URL into one of three routing categories:
 
-    - "youtube" : YouTube.com / youtu.be  → try captions first, pytubefix fallback
+    - "youtube" : YouTube.com / youtu.be  → try captions first, yt-dlp fallback
     - "iframe"  : Known embed-CDN domains → fetch HTML to extract direct video URL
     - "direct"  : Everything else         → pass straight to yt-dlp (Vimeo, Facebook …)
     """
@@ -185,24 +185,16 @@ def _extract_video_from_iframe(url: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Audio download — pytubefix (YouTube fallback when captions unavailable)
+# Audio download — yt-dlp (YouTube fallback when captions unavailable)
 # ---------------------------------------------------------------------------
 
 def _download_audio_youtube(video_url: str, output_dir: str, filename: str) -> str:
     """
-    Download audio from a YouTube URL using pytubefix.
-    No ffmpeg required — downloads the native audio stream.
+    Download audio from YouTube using yt-dlp.
+    yt-dlp is actively maintained and handles current YouTube clients more reliably than pytubefix.
     Returns the full path to the downloaded file.
     """
-    from pytubefix import YouTube
-    yt = YouTube(video_url)
-    audio_stream = (
-        yt.streams.filter(only_audio=True).order_by("abr").desc().first()
-    )
-    if audio_stream is None:
-        raise RuntimeError("No audio stream found for YouTube video")
-    downloaded = audio_stream.download(output_path=output_dir, filename=filename)
-    return downloaded
+    return _download_audio_ytdlp(video_url, str(Path(output_dir) / filename))
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +216,11 @@ def _download_audio_ytdlp(video_url: str, output_path: str) -> str:
         "quiet": True,
         "no_warnings": True,
         "ffmpeg-location": ffmpeg_path,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],
+            },
+        },
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([video_url])
@@ -278,9 +275,9 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
 
     Routing strategy
     ----------------
-    youtube  → try YouTube captions API first; fall back to pytubefix + Groq Whisper
-    iframe   → fetch embed HTML to extract direct video URL; yt-dlp + Groq Whisper
-    direct   → pass URL straight to yt-dlp + Groq Whisper (Vimeo, Facebook, etc.)
+    youtube  → try YouTube captions API first; fall back to yt-dlp + Claude
+    iframe   → fetch embed HTML to extract direct video URL; yt-dlp + Claude
+    direct   → pass URL straight to yt-dlp + Claude (Vimeo, Facebook, etc.)
     """
     loop = asyncio.get_event_loop()
     url_type = _detect_url_type(video_url)
@@ -289,7 +286,7 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
     temp_dir = Path(settings.temp_audio_dir)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── YouTube: try captions first, fall back to pytubefix + Claude ───────
+    # ── YouTube: try captions first, fall back to yt-dlp + Claude ──────────
     if url_type == "youtube":
         t0 = time.time()
         caption_result = await loop.run_in_executor(
@@ -304,7 +301,7 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
             return text, lang
         logger.info(
             f"[transcribe] no captions ({time.time()-t0:.2f}s), "
-            "falling back to pytubefix + Claude"
+            "falling back to yt-dlp + Claude"
         )
 
         audio_path = None
@@ -318,11 +315,11 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
                 str(temp_dir),
                 f"audio_{uid}",
             )
-            logger.info(f"[transcribe] pytubefix download in {time.time()-t1:.2f}s")
+            logger.info(f"[transcribe] yt-dlp download in {time.time()-t1:.2f}s")
 
             t2 = time.time()
             text, detected_lang = await loop.run_in_executor(
-                _executor, _transcribe_with_claude_sync, audio_path
+                _executor, _transcribe_with_groq_sync, audio_path
             )
             logger.info(
                 f"[transcribe] Claude done in {time.time()-t2:.2f}s | "
@@ -372,7 +369,7 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
 
         t2 = time.time()
         text, detected_lang = await loop.run_in_executor(
-            _executor, _transcribe_with_claude_sync, audio_path
+            _executor, _transcribe_with_groq_sync, audio_path
         )
         logger.info(
             f"[transcribe] Claude done in {time.time()-t2:.2f}s | "
