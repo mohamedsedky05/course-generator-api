@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from main import app
+from config import settings
 from services import cache as response_cache
 
 # ---------------------------------------------------------------------------
@@ -126,9 +127,12 @@ def pdf_bytes():
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
     """A fresh TestClient for each test."""
+    monkeypatch.setattr(settings, "basic_auth_username", "test-user")
+    monkeypatch.setattr(settings, "basic_auth_password", "test-password")
     with TestClient(app, raise_server_exceptions=False) as c:
+        c.auth = ("test-user", "test-password")
         yield c
 
 

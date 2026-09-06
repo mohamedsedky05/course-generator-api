@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_transcription_model: str = "whisper-large-v3-turbo"
     youtube_cookies_b64: str = ""
+    vimeo_cookies_b64: str = ""
+    basic_auth_username: str = ""
+    basic_auth_password: str = ""
     max_text_length: int = 50000
     temp_audio_dir: str = "./temp_audio"
     allowed_origins: str = "*"

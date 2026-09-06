@@ -396,6 +396,25 @@ class TestTranscribeVideoRouting:
         iframe_mock.assert_not_called()
         assert "vimeo" in result[0]
 
+    def test_vimeo_cookie_status_is_provider_specific(self):
+        from services import transcriber
+        from config import settings
+
+        original_youtube = settings.youtube_cookies_b64
+        original_vimeo = settings.vimeo_cookies_b64
+        try:
+            settings.youtube_cookies_b64 = "youtube-secret"
+            settings.vimeo_cookies_b64 = ""
+            transcriber._cookie_files.clear()
+            assert transcriber.vimeo_cookie_status() == {
+                "configured": False,
+                "file_ready": False,
+            }
+        finally:
+            settings.youtube_cookies_b64 = original_youtube
+            settings.vimeo_cookies_b64 = original_vimeo
+            transcriber._cookie_files.clear()
+
 
 # ---------------------------------------------------------------------------
 # Integration — real YouTube network call

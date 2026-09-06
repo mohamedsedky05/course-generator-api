@@ -1,9 +1,11 @@
 import logging
 import re
+import secrets
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Form, File, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import JSONResponse
 
 from services import cache as response_cache
@@ -14,12 +16,13 @@ from services.extractor import (
     clean_text,
     SUPPORTED_EXTENSIONS,
 )
-from services.transcriber import transcribe_video
+from services.transcriber import transcribe_video, vimeo_cookie_status, youtube_cookie_status
 from services.llm_service import generate_content, generate_lesson
 from utils.rate_limit import limiter
 
 router = APIRouter(prefix="/api", tags=["generate"])
 logger = logging.getLogger("router")
+basic_security = HTTPBasic()
 
 MIN_WORDS = 50
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
@@ -30,6 +33,24 @@ _URL_RE = re.compile(r'^https://', re.IGNORECASE)
 
 def _is_valid_url(url: str) -> bool:
     return bool(_URL_RE.match(url.strip()))
+
+
+def require_basic_auth(credentials: HTTPBasicCredentials = Depends(basic_security)) -> str:
+    """Require configured static Basic Auth credentials for generation requests."""
+    from config import settings
+
+    if not settings.basic_auth_username or not settings.basic_auth_password:
+        raise HTTPException(status_code=503, detail="API authentication is not configured")
+
+    username_ok = secrets.compare_digest(credentials.username, settings.basic_auth_username)
+    password_ok = secrets.compare_digest(credentials.password, settings.basic_auth_password)
+    if not (username_ok and password_ok):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +92,7 @@ def _build_error(code: str, message: str, status_code: int = 400):
 @limiter.limit("10/minute")
 async def generate_endpoint(
     request: Request,
+    _authenticated_user: str = Depends(require_basic_auth),
     text: Optional[str] = Form(None),
     video_url: Optional[str] = Form(None),
     num_quiz_questions: int = Form(default=10, ge=5, le=20),
@@ -205,6 +227,9 @@ async def health_check():
         "status": "ok",
         "claude_configured": bool(settings.effective_anthropic_api_key),
         "anthropic_configured": bool(settings.effective_anthropic_api_key),
+        "groq_configured": bool(settings.effective_groq_api_key),
+        "youtube_cookies": youtube_cookie_status(),
+        "vimeo_cookies": vimeo_cookie_status(),
         "cache_entries": response_cache.size(),
         "allowed_origins": settings.allowed_origins_list,
     }

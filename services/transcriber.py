@@ -21,7 +21,7 @@ logger = logging.getLogger("transcriber")
 _AR = r'؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿'
 
 _executor = ThreadPoolExecutor(max_workers=2)
-_youtube_cookie_file: Optional[str] = None
+_cookie_files: dict[str, str] = {}
 
 # ---------------------------------------------------------------------------
 # URL type classification
@@ -223,7 +223,7 @@ def _download_audio_ytdlp(video_url: str, output_path: str) -> str:
             },
         },
     }
-    cookie_file = _get_youtube_cookie_file()
+    cookie_file = _get_provider_cookie_file(video_url)
     if cookie_file:
         ydl_opts["cookiefile"] = cookie_file
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -238,30 +238,62 @@ def _download_audio_ytdlp(video_url: str, output_path: str) -> str:
     raise FileNotFoundError("Audio file not found after yt-dlp download")
 
 
-def _get_youtube_cookie_file() -> Optional[str]:
-    """Materialize encrypted production cookies for yt-dlp without logging them."""
-    global _youtube_cookie_file
-    encoded = settings.youtube_cookies_b64.strip()
+def _get_provider_cookie_file(video_url: str) -> Optional[str]:
+    """Materialize the provider-specific cookie file for yt-dlp."""
+    host = (urlparse(video_url).hostname or "").lower()
+    provider = "vimeo" if "vimeo.com" in host else "youtube" if host in _YOUTUBE_DOMAINS else ""
+    if not provider:
+        return None
+
+    encoded = (
+        settings.vimeo_cookies_b64 if provider == "vimeo" else settings.youtube_cookies_b64
+    ).strip()
     if not encoded:
         return None
-    if _youtube_cookie_file and Path(_youtube_cookie_file).exists():
-        return _youtube_cookie_file
+    if provider in _cookie_files and Path(_cookie_files[provider]).exists():
+        return _cookie_files[provider]
 
     try:
         cookie_data = base64.b64decode(encoded, validate=True)
     except Exception as exc:
-        raise RuntimeError("YOUTUBE_COOKIES_B64 is not valid base64") from exc
+        raise RuntimeError(f"{provider.upper()}_COOKIES_B64 is not valid base64") from exc
     if b"# Netscape HTTP Cookie File" not in cookie_data[:200]:
-        raise RuntimeError("YOUTUBE_COOKIES_B64 must contain a Netscape cookies.txt file")
+        raise RuntimeError(
+            f"{provider.upper()}_COOKIES_B64 must contain a Netscape cookies.txt file"
+        )
 
-    cookie_path = Path(settings.temp_audio_dir) / "youtube-cookies.txt"
+    cookie_path = Path(settings.temp_audio_dir) / f"{provider}-cookies.txt"
     cookie_path.write_bytes(cookie_data)
     try:
         os.chmod(cookie_path, 0o600)
     except OSError:
         pass
-    _youtube_cookie_file = str(cookie_path)
-    return _youtube_cookie_file
+    _cookie_files[provider] = str(cookie_path)
+    return _cookie_files[provider]
+
+
+def youtube_cookie_status() -> dict[str, bool]:
+    """Return non-sensitive diagnostics for production cookie configuration."""
+    configured = bool(settings.youtube_cookies_b64.strip())
+    if not configured:
+        return {"configured": False, "file_ready": False}
+    try:
+        file_ready = _get_provider_cookie_file("https://www.youtube.com") is not None
+    except RuntimeError:
+        file_ready = False
+    return {"configured": True, "file_ready": file_ready}
+
+
+def vimeo_cookie_status() -> dict[str, bool]:
+    """Return non-sensitive diagnostics for production Vimeo cookies."""
+    configured = bool(settings.vimeo_cookies_b64.strip())
+    if not configured:
+        return {"configured": False, "file_ready": False}
+    try:
+        file_ready = _get_provider_cookie_file("https://vimeo.com") is not None
+    except RuntimeError:
+        file_ready = False
+    return {"configured": True, "file_ready": file_ready}
 
 
 # ---------------------------------------------------------------------------

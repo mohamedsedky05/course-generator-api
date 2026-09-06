@@ -79,12 +79,35 @@ class TestHealthEndpoint:
     def test_cache_entries_is_int(self, client):
         assert isinstance(client.get("/api/health").json()["cache_entries"], int)
 
+    def test_health_reports_non_sensitive_provider_status(self, client):
+        body = client.get("/api/health").json()
+        assert isinstance(body["groq_configured"], bool)
+        assert set(body["youtube_cookies"]) == {"configured", "file_ready"}
+        assert set(body["vimeo_cookies"]) == {"configured", "file_ready"}
+
 
 # ---------------------------------------------------------------------------
 # Input validation
 # ---------------------------------------------------------------------------
 
 class TestInputValidation:
+    def test_generate_requires_basic_auth(self, client):
+        from main import app
+        from fastapi.testclient import TestClient
+
+        unauthenticated = TestClient(app, raise_server_exceptions=False)
+        response = unauthenticated.post("/api/generate", data={"text": ENGLISH_TEXT})
+        assert response.status_code == 401
+        assert response.headers["www-authenticate"] == "Basic"
+
+    def test_generate_rejects_invalid_basic_auth(self, client):
+        response = client.post(
+            "/api/generate",
+            data={"text": ENGLISH_TEXT},
+            auth=("test-user", "wrong-password"),
+        )
+        assert response.status_code == 401
+
     def test_no_input_returns_400(self, client):
         r = client.post("/api/generate", data={})
         assert r.status_code == 400

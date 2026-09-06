@@ -91,6 +91,29 @@ The API will be available at:
 curl http://localhost:8000/api/health
 ```
 
+### API Authentication
+
+`POST /api/generate` requires HTTP Basic Authentication. Configure these as
+encrypted runtime variables in DigitalOcean App Platform:
+
+```text
+BASIC_AUTH_USERNAME=<your-api-username>
+BASIC_AUTH_PASSWORD=<your-strong-api-password>
+```
+
+The health endpoint remains public for deployment checks. Send credentials with
+generation requests, for example:
+
+```bash
+curl -u "<your-api-username>:<your-strong-api-password>" \
+  -X POST http://localhost:8000/api/generate \
+  -F "text=Your lesson source text goes here..." \
+  -F "num_quiz_questions=5"
+```
+
+Use HTTPS in production. If either variable is missing, the generation endpoint
+returns `503` instead of operating without authentication.
+
 ---
 
 ### Input Type 1 — Plain Text
@@ -174,6 +197,7 @@ curl -X POST http://localhost:8000/api/generate \
 | `GROQ_API_KEY` | *(required for audio fallback)* | API key for Whisper-compatible audio transcription |
 | `GROQ_TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Speech-to-text model used after video audio is downloaded |
 | `YOUTUBE_COOKIES_B64` | *(optional)* | Base64-encoded Netscape `cookies.txt` used by server-side `yt-dlp` when YouTube blocks anonymous downloads |
+| `VIMEO_COOKIES_B64` | *(optional)* | Base64-encoded Netscape `cookies.txt` used when Vimeo requires a logged-in web client |
 | `MAX_TEXT_LENGTH` | `50000` | Max characters of text to send to Claude |
 | `TEMP_AUDIO_DIR` | `./temp_audio` | Temporary directory for downloaded audio files |
 
@@ -202,6 +226,10 @@ file only inside the container. Never commit `cookies.txt`, the base64 value,
 or either value to chat. If the encoded value is too large for App Platform
 environment-variable limits, store the cookie file in a private object store
 and download it at startup instead.
+
+YouTube and Vimeo require separate browser exports. A YouTube cookie export
+cannot authenticate Vimeo. Set the Vimeo export as `VIMEO_COOKIES_B64` only when
+the Vimeo video requires account access.
 
 Anthropic Claude does not currently accept audio content in the Messages API.
 The application therefore uses Groq Whisper for audio transcription and Claude
