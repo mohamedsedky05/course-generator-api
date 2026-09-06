@@ -341,7 +341,7 @@ def vimeo_cookie_status() -> dict[str, bool]:
 
 def _transcribe_with_groq_sync(audio_path: str) -> Tuple[str, str]:
     """Transcribe audio with Groq's Whisper-compatible speech-to-text API."""
-    api_key = settings.effective_groq_api_key
+    api_key = settings.effective_groq_api_key.strip()
     if not api_key:
         raise RuntimeError(
             "GROQ_API_KEY is required for audio transcription; "
