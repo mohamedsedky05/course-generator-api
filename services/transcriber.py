@@ -360,6 +360,11 @@ def _transcribe_with_groq_sync(audio_path: str) -> Tuple[str, str]:
             timeout=180,
         )
     if response.is_error:
+        if response.status_code == 401:
+            raise RuntimeError(
+                "Groq authentication failed (HTTP 401); "
+                "replace GROQ_API_KEY in the production environment"
+            )
         raise RuntimeError(f"Speech-to-text provider returned HTTP {response.status_code}")
 
     payload = response.json()
