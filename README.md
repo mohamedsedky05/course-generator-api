@@ -1,14 +1,14 @@
 # AI Course Generator API
 
-A production-ready FastAPI backend that converts text, documents, or YouTube videos into structured educational courses using Google Gemini 2.0 Flash (free tier) and OpenAI Whisper (local, free).
+A production-ready FastAPI backend that converts text, documents, or YouTube videos into structured educational courses using Anthropic Claude for generation and transcription.
 
 ---
 
 ## Features
 
 - **3 input types:** plain text, file upload (PDF/DOCX/PPTX/TXT), YouTube URL
-- **Free LLM:** Google Gemini 2.0 Flash with 1M token context
-- **Free transcription:** OpenAI Whisper (runs locally, no API key needed)
+- **LLM:** Anthropic Claude Sonnet for structured course generation
+- **Transcription:** Claude-based processing for audio/video workflows
 - **Arabic + English** support with auto language detection
 - **Two-stage prompting** for structural analysis then content generation
 - **Strict content-faithful pipeline** — LLM only reorganizes, never adds external knowledge
@@ -17,12 +17,12 @@ A production-ready FastAPI backend that converts text, documents, or YouTube vid
 
 ## Prerequisites
 
-### 1. Get a Free Gemini API Key
+### 1. Get your Anthropic API key
 
-1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
-2. Sign in with a Google account
-3. Click **Create API key**
-4. Copy the key — you get **free** access with generous limits (no credit card needed)
+1. Go to the [Anthropic Console](https://console.anthropic.com/)
+2. Create or sign in to your account
+3. Generate an API key
+4. Copy it into your `.env` file as `ANTHROPIC_API_KEY`
 
 ### 2. Install FFmpeg (required by Whisper)
 
@@ -67,7 +67,7 @@ pip install -r requirements.txt
 
 # Configure environment
 cp .env.example .env
-# Edit .env and set your GEMINI_API_KEY
+# Edit .env and set your ANTHROPIC_API_KEY
 ```
 
 ---
@@ -179,12 +179,13 @@ curl -X POST http://localhost:8000/api/generate \
 
 | Variable | Default | Description |
 |---|---|---|
-| `GEMINI_API_KEY` | *(required)* | Your Google AI Studio API key |
-| `WHISPER_MODEL` | `base` | Whisper model size: `tiny`, `base`, `small`, `medium`, `large` |
-| `MAX_TEXT_LENGTH` | `50000` | Max characters of text to send to Gemini |
+| `ANTHROPIC_API_KEY` | *(required)* | Your Anthropic API key |
+| `CLAUDE_GENERATION_MODEL` | `claude-sonnet-4-20250514` | Claude model used for content generation |
+| `CLAUDE_CLEANUP_MODEL` | `claude-3-5-haiku-20241022` | Claude model used for text cleanup |
+| `MAX_TEXT_LENGTH` | `50000` | Max characters of text to send to Claude |
 | `TEMP_AUDIO_DIR` | `./temp_audio` | Temporary directory for downloaded audio files |
 
-> **Whisper model sizes:** `tiny` (fastest, least accurate) → `large` (slowest, most accurate). `base` is a good balance for most use cases.
+> Recommended default models: `claude-sonnet-4-20250514` for generation and `claude-3-5-haiku-20241022` for cleanup.
 
 ---
 
@@ -199,6 +200,6 @@ curl -X POST http://localhost:8000/api/generate \
 | `VIDEO_UNAVAILABLE` | YouTube video is private, deleted, or invalid |
 | `TRANSCRIPTION_FAILED` | Whisper transcription error |
 | `TEXT_TOO_SHORT` | Extracted text under 50 words |
-| `LLM_QUOTA_EXCEEDED` | Gemini free tier quota hit |
-| `LLM_ERROR` | Gemini API or JSON parsing failure |
+| `LLM_QUOTA_EXCEEDED` | Claude API quota hit |
+| `LLM_ERROR` | Claude API or JSON parsing failure |
 | `INTERNAL_ERROR` | Unexpected server error |

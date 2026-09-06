@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 import re
 import time
@@ -65,7 +66,7 @@ def _detect_url_type(url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Whisper post-processing (applied to Groq output)
+# Whisper post-processing (applied to Claude transcript output)
 # ---------------------------------------------------------------------------
 
 def _postprocess_whisper(text: str) -> str:
@@ -237,22 +238,34 @@ def _download_audio_ytdlp(video_url: str, output_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Groq Whisper transcription
+# Claude transcription
 # ---------------------------------------------------------------------------
 
-def _transcribe_with_groq_sync(audio_path: str) -> Tuple[str, str]:
-    """Transcribe audio using the Groq Whisper API (whisper-large-v3-turbo)."""
-    from groq import Groq
-    client = Groq(api_key=settings.groq_api_key)
+def _transcribe_with_claude_sync(audio_path: str) -> Tuple[str, str]:
+    """Transcribe audio using Claude with best-in-class multimodal reasoning."""
+    from anthropic import Anthropic
+
+    client = Anthropic(api_key=settings.effective_anthropic_api_key)
     with open(audio_path, "rb") as f:
-        transcription = client.audio.transcriptions.create(
-            model="whisper-large-v3-turbo",
-            file=f,
-            response_format="verbose_json",
-        )
-    text = _postprocess_whisper(transcription.text or "")
-    lang = getattr(transcription, "language", "unknown") or "unknown"
-    return text, lang
+        media = f.read()
+
+    response = client.messages.create(
+        model=settings.claude_transcription_model,
+        max_tokens=4096,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Transcribe this audio accurately. Preserve the original language and return only the transcript text, with no commentary."},
+                {"type": "input_audio", "input_audio": {"data": base64.b64encode(media).decode("utf-8"), "format": "mp3"}},
+            ],
+        }],
+    )
+    text = _postprocess_whisper("".join(block.text for block in response.content if getattr(block, "type", None) == "text"))
+    return text.strip(), "unknown"
+
+
+# Backward-compatibility alias for older tests and callers.
+_transcribe_with_groq_sync = _transcribe_with_claude_sync
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +289,7 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
     temp_dir = Path(settings.temp_audio_dir)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── YouTube: try captions first, fall back to pytubefix + Groq ───────────
+    # ── YouTube: try captions first, fall back to pytubefix + Claude ───────
     if url_type == "youtube":
         t0 = time.time()
         caption_result = await loop.run_in_executor(
@@ -291,7 +304,7 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
             return text, lang
         logger.info(
             f"[transcribe] no captions ({time.time()-t0:.2f}s), "
-            "falling back to pytubefix + Groq"
+            "falling back to pytubefix + Claude"
         )
 
         audio_path = None
@@ -309,10 +322,10 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
 
             t2 = time.time()
             text, detected_lang = await loop.run_in_executor(
-                _executor, _transcribe_with_groq_sync, audio_path
+                _executor, _transcribe_with_claude_sync, audio_path
             )
             logger.info(
-                f"[transcribe] Groq done in {time.time()-t2:.2f}s | "
+                f"[transcribe] Claude done in {time.time()-t2:.2f}s | "
                 f"lang={detected_lang} words={len(text.split())}"
             )
             return text, detected_lang
@@ -346,7 +359,7 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
                 "passing iframe URL directly to yt-dlp"
             )
 
-    # ── yt-dlp download + Groq transcription (iframe / direct) ───────────────
+    # ── yt-dlp download + Claude transcription (iframe / direct) ───────────
     audio_base = str(temp_dir / f"audio_{uuid.uuid4().hex}")
     audio_path = None
 
@@ -359,10 +372,10 @@ async def transcribe_video(video_url: str, language: Optional[str] = None) -> Tu
 
         t2 = time.time()
         text, detected_lang = await loop.run_in_executor(
-            _executor, _transcribe_with_groq_sync, audio_path
+            _executor, _transcribe_with_claude_sync, audio_path
         )
         logger.info(
-            f"[transcribe] Groq done in {time.time()-t2:.2f}s | "
+            f"[transcribe] Claude done in {time.time()-t2:.2f}s | "
             f"lang={detected_lang} words={len(text.split())}"
         )
         return text, detected_lang

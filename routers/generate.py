@@ -170,7 +170,7 @@ async def generate_endpoint(
     except Exception as e:
         msg = str(e).lower()
         if "quota" in msg or "resourceexhausted" in msg:
-            return _build_error("LLM_QUOTA_EXCEEDED", "Gemini API quota exceeded. Try again later.", 429)
+            return _build_error("LLM_QUOTA_EXCEEDED", "Anthropic API quota exceeded. Try again later.", 429)
         return _build_error("LLM_ERROR", f"Content generation failed: {e}", 500)
 
     processing_time = round(time.time() - start_time, 2)
@@ -201,8 +201,8 @@ async def health_check():
     from config import settings
     return {
         "status": "ok",
-        "groq_configured": bool(settings.groq_api_key),
-        "gemini_configured": bool(settings.gemini_api_key),
+        "claude_configured": bool(settings.effective_anthropic_api_key),
+        "anthropic_configured": bool(settings.effective_anthropic_api_key),
         "cache_entries": response_cache.size(),
         "allowed_origins": settings.allowed_origins_list,
     }

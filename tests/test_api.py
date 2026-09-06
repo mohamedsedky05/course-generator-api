@@ -65,7 +65,7 @@ class TestHealthEndpoint:
 
     def test_contains_required_fields(self, client):
         body = client.get("/api/health").json()
-        for field in ("groq_configured", "gemini_configured",
+        for field in ("claude_configured", "anthropic_configured",
                       "cache_entries", "allowed_origins"):
             assert field in body, f"Missing field: {field}"
 

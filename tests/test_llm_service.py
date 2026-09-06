@@ -4,12 +4,19 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from config import settings
 from services.llm_service import (
     _parse_json_safe,
     _strip_markdown_json,
     clean_transcription,
     generate_content,
 )
+
+
+def test_claude_credentials_and_models_configured():
+    assert hasattr(settings, "anthropic_api_key")
+    assert hasattr(settings, "claude_generation_model")
+    assert hasattr(settings, "claude_cleanup_model")
 
 # ---------------------------------------------------------------------------
 # Sample data
@@ -91,18 +98,18 @@ class TestParseJsonSafe:
 class TestCleanTranscriptionMocked:
     async def test_returns_cleaned_text(self):
         cleaned = "The router uses TCP/IP protocol"
-        with patch("services.llm_service._call_gemini", new=AsyncMock(return_value=cleaned)):
+        with patch("services.llm_service._call_claude", new=AsyncMock(return_value=cleaned)):
             result = await clean_transcription("الراوتر يستخدم بروتوكول TCP/IP")
         assert result == cleaned
 
     async def test_falls_back_to_original_on_exception(self):
         original = "original text with issues"
-        with patch("services.llm_service._call_gemini", new=AsyncMock(side_effect=Exception("down"))):
+        with patch("services.llm_service._call_claude", new=AsyncMock(side_effect=Exception("down"))):
             result = await clean_transcription(original)
         assert result == original
 
     async def test_returns_stripped_result(self):
-        with patch("services.llm_service._call_gemini", new=AsyncMock(return_value="  cleaned  ")):
+        with patch("services.llm_service._call_claude", new=AsyncMock(return_value="  cleaned  ")):
             result = await clean_transcription("text")
         assert result == "cleaned"
 
@@ -157,7 +164,7 @@ class TestGenerateContentMocked:
                 return "not json"     # first generation attempt fails
             return json.dumps(SAMPLE_RESULT)  # retry succeeds
 
-        with patch("services.llm_service._call_gemini", new=flaky):
+        with patch("services.llm_service._call_claude", new=flaky):
             result = await generate_content(english_text, 2)
 
         assert call_num == 3
@@ -171,7 +178,7 @@ class TestGenerateContentMocked:
             prompts_seen.append(prompt)
             return english_text if len(prompts_seen) == 1 else json.dumps(SAMPLE_RESULT)
 
-        with patch("services.llm_service._call_gemini", new=capture):
+        with patch("services.llm_service._call_claude", new=capture):
             await generate_content(english_text, 7)
 
         generation_prompt = prompts_seen[1]
@@ -184,52 +191,57 @@ class TestGenerateContentMocked:
 
 class TestCallGeminiRetry:
     async def test_retries_on_503_up_to_3_times(self):
-        from google.genai.errors import ClientError
         call_count = 0
+
+        class FakeStatusError(Exception):
+            status_code = 503
 
         async def mock_generate(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise ClientError(503, {"error": {"code": 503, "message": "Service Unavailable"}})
-            return MagicMock(text="success")
+                raise FakeStatusError("Service Unavailable")
+            return "success"
 
         with patch("services.llm_service._get_client") as mock_client, \
              patch("asyncio.sleep", new=AsyncMock()):
-            mock_client.return_value.aio.models.generate_content = mock_generate
-            from services.llm_service import _call_gemini
-            result = await _call_gemini("test")
+            mock_client.return_value.messages.create = mock_generate
+            from services.llm_service import _call_claude
+            result = await _call_claude("test", "claude-sonnet-4-20250514")
 
         assert call_count == 3
         assert result == "success"
 
     async def test_raises_after_exhausting_retries_on_503(self):
-        from google.genai.errors import ClientError
+        class FakeStatusError(Exception):
+            status_code = 503
 
         async def always_503(*args, **kwargs):
-            raise ClientError(503, {"error": {"code": 503, "message": "Service Unavailable"}})
+            raise FakeStatusError("Service Unavailable")
 
         with patch("services.llm_service._get_client") as mock_client, \
              patch("asyncio.sleep", new=AsyncMock()):
-            mock_client.return_value.aio.models.generate_content = always_503
-            from services.llm_service import _call_gemini
+            mock_client.return_value.messages.create = always_503
+            from services.llm_service import _call_claude
             with pytest.raises(Exception):
-                await _call_gemini("test")
+                await _call_claude("test", "claude-sonnet-4-20250514")
 
     async def test_does_not_retry_on_429(self):
-        from google.genai.errors import ClientError
         call_count = 0
+
+        class FakeQuotaError(Exception):
+            status_code = 429
 
         async def quota_err(*args, **kwargs):
             nonlocal call_count
             call_count += 1
-            raise ClientError(429, {"error": {"code": 429, "message": "Resource Exhausted"}})
+            raise FakeQuotaError("Resource Exhausted")
 
         with patch("services.llm_service._get_client") as mock_client:
-            mock_client.return_value.aio.models.generate_content = quota_err
-            from services.llm_service import _call_gemini
+            mock_client.return_value.messages.create = quota_err
+            from services.llm_service import _call_claude
             with pytest.raises(Exception):
-                await _call_gemini("test")
+                await _call_claude("test", "claude-sonnet-4-20250514")
 
         assert call_count == 1  # no retry for quota errors
 
@@ -246,15 +258,15 @@ class TestCallGeminiRetry:
         with patch("services.llm_service._get_client") as mock_client, \
              patch("asyncio.wait_for", side_effect=timeout_once), \
              patch("asyncio.sleep", new=AsyncMock()):
-            mock_client.return_value.aio.models.generate_content = AsyncMock()
-            from services.llm_service import _call_gemini
-            result = await _call_gemini("test")
+            mock_client.return_value.messages.create = AsyncMock()
+            from services.llm_service import _call_claude
+            result = await _call_claude("test", "claude-sonnet-4-20250514")
 
         assert result == "ok"
 
 
 # ---------------------------------------------------------------------------
-# Integration — real Gemini API
+# Integration — real Claude API
 # ---------------------------------------------------------------------------
 
 @pytest.mark.integration

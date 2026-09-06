@@ -4,24 +4,25 @@ import logging
 import re
 import time
 
-import google.genai as genai
-from google.genai.errors import ClientError
+from anthropic import AsyncAnthropic
 
 from config import settings
 
 logger = logging.getLogger("llm_service")
 
-MODEL = "gemini-2.5-flash"
-GEMINI_TIMEOUT = 120.0        # seconds per call
-_RETRY_DELAYS = [1, 2, 4]    # exponential backoff for 503 / timeout
+GENERATION_MODEL = settings.claude_generation_model
+CLEANUP_MODEL = settings.claude_cleanup_model
+CLAUDE_TIMEOUT = 120.0
+_RETRY_DELAYS = [1, 2, 4]
 
-_client: genai.Client | None = None
+_client: AsyncAnthropic | None = None
 
 
-def _get_client() -> genai.Client:
+def _get_client() -> AsyncAnthropic:
     global _client
+    api_key = settings.effective_anthropic_api_key
     if _client is None:
-        _client = genai.Client(api_key=settings.gemini_api_key)
+        _client = AsyncAnthropic(api_key=api_key)
     return _client
 
 
@@ -142,7 +143,7 @@ TEXT:
 
 
 # ---------------------------------------------------------------------------
-# Core Gemini call with retry + timeout
+# Core Claude call with retry + timeout
 # ---------------------------------------------------------------------------
 
 def _strip_markdown_json(text: str) -> str:
@@ -152,34 +153,34 @@ def _strip_markdown_json(text: str) -> str:
     return text.strip()
 
 
-async def _call_gemini(prompt: str) -> str:
+async def _call_claude(prompt: str, model: str) -> str:
     last_exc: Exception | None = None
-    for attempt in range(1, len(_RETRY_DELAYS) + 2):  # up to 4 attempts
+    for attempt in range(1, len(_RETRY_DELAYS) + 2):
         try:
             client = _get_client()
             response = await asyncio.wait_for(
-                client.aio.models.generate_content(model=MODEL, contents=prompt),
-                timeout=GEMINI_TIMEOUT,
+                client.messages.create(
+                    model=model,
+                    max_tokens=4096,
+                    system="You are a precise, structured assistant.",
+                    messages=[{"role": "user", "content": prompt}],
+                ),
+                timeout=CLAUDE_TIMEOUT,
             )
-            return response.text
+            return "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
         except asyncio.TimeoutError as e:
             last_exc = e
-            logger.warning(f"[Gemini] Attempt {attempt} timed out after {GEMINI_TIMEOUT}s")
-        except ClientError as e:
-            last_exc = e
-            # ClientError stores the HTTP status in .code (google-genai SDK)
-            status = getattr(e, 'code', None) or getattr(e, 'status_code', 0)
-            logger.warning(f"[Gemini error] {type(e).__name__} status={status}: {e}")
-            if status != 503:
-                raise  # non-retryable (quota, auth, etc.)
-            logger.warning(f"[Gemini] 503 on attempt {attempt}, will retry")
+            logger.warning(f"[Claude] Attempt {attempt} timed out after {CLAUDE_TIMEOUT}s")
         except Exception as e:
-            logger.error(f"[Gemini error] {type(e).__name__}: {e}")
-            raise
+            last_exc = e
+            logger.warning(f"[Claude error] {type(e).__name__}: {e}")
+            status = getattr(e, "status_code", None)
+            if status not in (429, 500, 503):
+                raise
 
         if attempt <= len(_RETRY_DELAYS):
             delay = _RETRY_DELAYS[attempt - 1]
-            logger.info(f"[Gemini] Retrying in {delay}s (attempt {attempt + 1}/{len(_RETRY_DELAYS) + 1})...")
+            logger.info(f"[Claude] Retrying in {delay}s (attempt {attempt + 1}/{len(_RETRY_DELAYS) + 1})...")
             await asyncio.sleep(delay)
 
     raise last_exc  # type: ignore[misc]
@@ -201,12 +202,16 @@ def _parse_json_safe(raw: str) -> dict:
 # Pipeline stages
 # ---------------------------------------------------------------------------
 
+# Backward-compatible alias for older tests and call sites.
+_call_gemini = _call_claude
+
+
 async def clean_transcription(text: str) -> str:
     """Fix Arabic transliterations of English technical terms."""
     t0 = time.time()
     prompt = TERM_FIX_PROMPT.format(text=text)
     try:
-        result = (await _call_gemini(prompt)).strip()
+        result = (await _call_claude(prompt, CLEANUP_MODEL)).strip()
         logger.info(f"[llm] clean_transcription done in {time.time()-t0:.2f}s")
         return result
     except Exception:
@@ -227,12 +232,12 @@ async def generate_content(text: str, num_quiz_questions: int) -> dict:
     # Generate title + description + quiz in one call
     logger.info(f"[llm] Generating content ({num_quiz_questions} quiz questions)")
     prompt = GENERATION_PROMPT.format(q=num_quiz_questions, text=cleaned_text)
-    raw = await _call_gemini(prompt)
+    raw = await _call_claude(prompt, GENERATION_MODEL)
     try:
         result = _parse_json_safe(raw)
     except (json.JSONDecodeError, ValueError):
         logger.warning("[llm] Invalid JSON on first attempt, retrying with explicit instruction")
-        raw2 = await _call_gemini(prompt + RETRY_SUFFIX)
+        raw2 = await _call_claude(prompt + RETRY_SUFFIX, GENERATION_MODEL)
         result = _parse_json_safe(raw2)
 
     logger.info(
