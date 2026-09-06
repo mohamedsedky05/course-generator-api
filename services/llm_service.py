@@ -30,7 +30,7 @@ def _get_client() -> AsyncAnthropic:
 # Prompts
 # ---------------------------------------------------------------------------
 
-GENERATION_PROMPT = """You are an expert educational content organizer.
+GENERATION_PROMPT_PREFIX = """You are an expert educational content organizer.
 
 Convert the following text into a structured educational output.
 
@@ -40,7 +40,6 @@ STRICT CONTENT RULES — THIS IS THE MOST IMPORTANT PART:
 - Every quiz question must be answerable ONLY from the provided text
 - Respond ONLY in valid JSON with no markdown formatting
 
-Generate exactly {q} quiz questions (70% MCQ with 4 options, 30% True/False).
 Output language must match the input content language.
 
 Required JSON schema (respond with NOTHING else):
@@ -67,12 +66,13 @@ Required JSON schema (respond with NOTHING else):
   ]
 }}
 
-TEXT:
-{text}"""
+"""
+
+GENERATION_PROMPT = GENERATION_PROMPT_PREFIX + "Generate exactly {q} quiz questions (70% MCQ with 4 options, 30% True/False).\n\nTEXT:\n{text}"
 
 RETRY_SUFFIX = "\n\nCRITICAL: Your previous response was not valid JSON. Respond ONLY with valid JSON. No markdown. No explanation. No code blocks. Start your response with {{ and end with }}."
 
-TERM_FIX_PROMPT = """You are a technical text corrector for Arabic educational content.
+TERM_FIX_PROMPT_PREFIX = """You are a technical text corrector for Arabic educational content.
 
 Your task: fix Arabic phonetic transliterations of English technical terms back to their correct English spelling.
 
@@ -139,7 +139,9 @@ Common patterns to recognise and fix:
 برانش → branch
 
 TEXT:
-{text}"""
+"""
+
+TERM_FIX_PROMPT = TERM_FIX_PROMPT_PREFIX + "{text}"
 
 
 # ---------------------------------------------------------------------------
@@ -153,21 +155,37 @@ def _strip_markdown_json(text: str) -> str:
     return text.strip()
 
 
-async def _call_claude(prompt: str, model: str) -> str:
+async def _call_claude(prompt: str, model: str, prompt_prefix: str | None = None) -> str:
     last_exc: Exception | None = None
     for attempt in range(1, len(_RETRY_DELAYS) + 2):
         try:
             client = _get_client()
+            if prompt_prefix is None:
+                user_content = prompt
+            else:
+                user_content = [
+                    {
+                        "type": "text",
+                        "text": prompt_prefix,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {"type": "text", "text": prompt},
+                ]
             response = await asyncio.wait_for(
                 client.messages.create(
                     model=model,
                     max_tokens=4096,
                     system="You are a precise, structured assistant.",
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[{"role": "user", "content": user_content}],
                 ),
                 timeout=CLAUDE_TIMEOUT,
             )
-            return "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
+            content = getattr(response, "content", response)
+            if isinstance(content, str):
+                return content
+            if not isinstance(content, (list, tuple)) and hasattr(response, "text"):
+                return response.text
+            return "".join(block.text for block in content if getattr(block, "type", None) == "text")
         except asyncio.TimeoutError as e:
             last_exc = e
             logger.warning(f"[Claude] Attempt {attempt} timed out after {CLAUDE_TIMEOUT}s")
@@ -175,7 +193,7 @@ async def _call_claude(prompt: str, model: str) -> str:
             last_exc = e
             logger.warning(f"[Claude error] {type(e).__name__}: {e}")
             status = getattr(e, "status_code", None)
-            if status not in (429, 500, 503):
+            if status not in (500, 503):
                 raise
 
         if attempt <= len(_RETRY_DELAYS):
@@ -209,9 +227,9 @@ _call_gemini = _call_claude
 async def clean_transcription(text: str) -> str:
     """Fix Arabic transliterations of English technical terms."""
     t0 = time.time()
-    prompt = TERM_FIX_PROMPT.format(text=text)
+    prompt = text
     try:
-        result = (await _call_claude(prompt, CLEANUP_MODEL)).strip()
+        result = (await _call_claude(prompt, CLEANUP_MODEL, TERM_FIX_PROMPT_PREFIX)).strip()
         logger.info(f"[llm] clean_transcription done in {time.time()-t0:.2f}s")
         return result
     except Exception:
@@ -231,13 +249,21 @@ async def generate_content(text: str, num_quiz_questions: int) -> dict:
 
     # Generate title + description + quiz in one call
     logger.info(f"[llm] Generating content ({num_quiz_questions} quiz questions)")
-    prompt = GENERATION_PROMPT.format(q=num_quiz_questions, text=cleaned_text)
-    raw = await _call_claude(prompt, GENERATION_MODEL)
+    prompt = (
+        f"Generate exactly {num_quiz_questions} quiz questions "
+        "(70% MCQ with 4 options, 30% True/False).\n\n"
+        f"TEXT:\n{cleaned_text}"
+    )
+    raw = await _call_claude(prompt, GENERATION_MODEL, GENERATION_PROMPT_PREFIX)
     try:
         result = _parse_json_safe(raw)
     except (json.JSONDecodeError, ValueError):
         logger.warning("[llm] Invalid JSON on first attempt, retrying with explicit instruction")
-        raw2 = await _call_claude(prompt + RETRY_SUFFIX, GENERATION_MODEL)
+        raw2 = await _call_claude(
+            prompt + RETRY_SUFFIX,
+            GENERATION_MODEL,
+            GENERATION_PROMPT_PREFIX,
+        )
         result = _parse_json_safe(raw2)
 
     logger.info(

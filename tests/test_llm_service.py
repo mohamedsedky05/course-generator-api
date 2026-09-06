@@ -155,7 +155,7 @@ class TestGenerateContentMocked:
         """If the generation call returns bad JSON once, it should retry."""
         call_num = 0
 
-        async def flaky(prompt):
+        async def flaky(prompt, *args):
             nonlocal call_num
             call_num += 1
             if call_num == 1:
@@ -174,7 +174,7 @@ class TestGenerateContentMocked:
         """The num_quiz_questions value must be embedded in the prompt."""
         prompts_seen = []
 
-        async def capture(prompt):
+        async def capture(prompt, *args):
             prompts_seen.append(prompt)
             return english_text if len(prompts_seen) == 1 else json.dumps(SAMPLE_RESULT)
 
@@ -190,6 +190,26 @@ class TestGenerateContentMocked:
 # ---------------------------------------------------------------------------
 
 class TestCallGeminiRetry:
+    async def test_cached_prefix_uses_ephemeral_cache_control(self):
+        response = MagicMock()
+        response.content = [MagicMock(type="text", text="ok")]
+        create = AsyncMock(return_value=response)
+
+        with patch("services.llm_service._get_client") as mock_client:
+            mock_client.return_value.messages.create = create
+            from services.llm_service import _call_claude
+            result = await _call_claude("dynamic text", "claude-sonnet-4-6", "stable instructions")
+
+        assert result == "ok"
+        request = create.await_args.kwargs
+        content = request["messages"][0]["content"]
+        assert content[0] == {
+            "type": "text",
+            "text": "stable instructions",
+            "cache_control": {"type": "ephemeral"},
+        }
+        assert content[1] == {"type": "text", "text": "dynamic text"}
+
     async def test_retries_on_503_up_to_3_times(self):
         call_count = 0
 
